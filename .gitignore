@@ -1,0 +1,8 @@
+.local/
+__pycache__/
+*.pyc
+*.key
+*.pem
+*.csr
+*.srl
+.DS_Store

@@ -1,0 +1,49 @@
+# Example site configuration. Copy to ~/.config/tailnet-ops/site.toml (mode 0600) and edit.
+# `tn init` writes this file for you: it asks only for what SSH cannot tell it.
+# Addresses here are documentation ranges; host names are placeholders.
+
+[site]
+name = "example"
+owner_user = "owner"               # Headscale user that owns the tags and personal devices
+
+[regions.cn]                       # one tailnet per region
+control_host = "cn-control"        # SSH alias of the machine that runs Headscale
+check_from = "cn-probe"            # another host in the region, for external checks
+public_ipv4 = "198.51.100.10"      # how clients reach the control plane
+listen_ipv4 = "0.0.0.0"            # address Headscale binds; a specific IP on multi-address hosts
+port = 9443
+stun_port = 3478
+ipv4_prefix = "100.64.0.0/16"      # inside 100.64.0.0/10, not overlapping other regions
+avoid_prefixes = []                # e.g. provider DNS inside 100.64.0.0/10
+base_domain = "cn.tailnet.internal"
+derp_region_id = 901
+derp_region_code = "cn"
+derp_region_name = "CN control"
+official_derp = false              # false keeps devices off third-party relays
+tags = ["tag:cn-server", "tag:cn-gateway"]
+
+[regions.ovs]
+control_host = "ovs-control"
+check_from = "ovs-probe"
+public_ipv4 = "203.0.113.20"
+listen_ipv4 = "203.0.113.20"
+port = 9443
+stun_port = 3478
+ipv4_prefix = "100.65.0.0/16"
+avoid_prefixes = []
+base_domain = "ovs.tailnet.internal"
+derp_region_id = 902
+derp_region_code = "ovs"
+derp_region_name = "OVS control"
+official_derp = true
+tags = ["tag:ovs-server", "tag:ovs-border"]
+
+[[lines]]                          # optional dedicated links between regions
+name = "line1"
+initiator = "cn-gateway"           # the only side allowed to start connections
+responder = "ovs-line"
+responder_entry_ipv4 = "203.0.113.30"
+initiator_public_ipv4 = "198.51.100.40"
+one_way = true
+keepalive_seconds = 25
+priority = 10                      # lower wins when several lines exist
