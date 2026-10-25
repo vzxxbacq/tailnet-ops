@@ -92,7 +92,7 @@ if [ "$(uname -s)" = Darwin ]; then
   pass "OS: $os"
 else
   os=$(uname -s)
-  flag "OS: not macOS ($os); fix os in [hosts.$HOST]"
+  flag "OS: not macOS ($os); join it with --os linux"
 fi
 echo "TN-FACT os=$os"
 echo "TN-FACT machine=$(uname -m)"

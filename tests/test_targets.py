@@ -88,6 +88,7 @@ class FakeUI:
         self.answers = answers
         self.asked = []
         self.notes = []
+        self.said = []
 
     def select(self, title, options, default=0):
         self.asked.append(title)
@@ -104,53 +105,64 @@ class FakeUI:
     def note(self, text):
         self.notes.append(text)
 
+    def chosen(self, title, answer):
+        self.said.append(title)
+
 
 class AskTest(TempDirTest):
     def setUp(self):
         super().setUp()
         self.site = self.load_site()
 
-    def test_this_machine_as_a_personal_device(self):
-        ui = FakeUI({"Which machine joins?": None, "Which region does it start in?": "ovs"})
+    def ask(self, answers, this_os="linux", aliases=("cn-control", "box"), **kw):
+        ui = FakeUI(answers)
         with mock.patch.object(targets, "this_machine_name", return_value="owners-mac"), \
-                mock.patch.object(targets, "this_os", return_value="linux"):
-            got = targets.ask(self.site, ui, ["cn-control", "box"])
-        self.assertEqual(got, {"host": None, "role": "personal", "region": "ovs", "name": "owners-mac"})
-        self.assertEqual(ui.asked, ["Which machine joins?", "How does it join?", "Which region does it start in?",
-                                    "Its name in the tailnet"])
+                mock.patch.object(targets, "this_os", return_value=this_os):
+            got = targets.ask(self.site, ui, list(aliases), **kw)
+        return got, ui
 
-    def test_a_mac_chooses_the_app_or_the_command_line(self):
-        ui = FakeUI({"Which machine joins?": None, "Which Tailscale does it use?": "app"})
-        with mock.patch.object(targets, "this_machine_name", return_value="owners-mac"), \
-                mock.patch.object(targets, "this_os", return_value="macos"):
-            got = targets.ask(self.site, ui, [])
+    def test_this_machine_on_the_command_line(self):
+        got, ui = self.ask({"Which machine?": None, "How does it join?": "personal",
+                            "Which region does it start in?": "ovs"})
+        self.assertEqual(got, {"host": None, "os_name": "linux", "role": "personal", "region": "ovs",
+                               "name": "owners-mac"})
+        self.assertEqual(ui.asked, ["Which Tailscale?", "Which OS?", "Which machine?", "How does it join?",
+                                    "Which region does it start in?", "Its name in the tailnet"])
+
+    def test_the_os_decides_whether_this_machine_is_offered(self):
+        got, ui = self.ask({"Which OS?": "macos", "Which machine?": "box"}, this_os="linux")
+        self.assertEqual((got["host"], got["os_name"], got["role"]), ("box", "macos", "server"))
+        with self.assertRaises(AssertionError):                       # "This machine" is not a choice
+            self.ask({"Which OS?": "macos", "Which machine?": None}, this_os="linux")
+
+    def test_the_app_on_this_mac_or_another(self):
+        got, ui = self.ask({"Which Tailscale?": "app", "Which Mac?": "here"}, this_os="macos")
         self.assertEqual(got, {"host": None, "here": True, "app": True, "region": "cn", "name": "owners-mac"})
-        ui = FakeUI({"Which machine joins?": "box", "Which Tailscale does it use?": "cli"})
-        got = targets.ask(self.site, ui, ["box"], detect_os=lambda h: "macos")
-        self.assertEqual(got["role"], "server")                       # the command line: the usual questions
-        self.assertIn("Which Tailscale does it use?", ui.asked)
-        ui = FakeUI({"Which machine joins?": "box"})
-        targets.ask(self.site, ui, ["box"], detect_os=lambda h: "linux")
-        self.assertNotIn("Which Tailscale does it use?", ui.asked)    # Linux: the command line only
-        ui = FakeUI({"Which machine joins?": "nossh"})
-        got = targets.ask(self.site, ui, [])
+        self.assertNotIn("Which OS?", ui.asked)                       # the app: macOS only, said not asked
+        self.assertIn("Which OS?", ui.said)
+        got, ui = self.ask({"Which Tailscale?": "app", "Which Mac?": "other", "Its name in the tailnet": "air"},
+                           this_os="macos")
         self.assertEqual(got, {"host": None, "here": False, "app": True, "region": "cn", "name": "air"})
+        got, ui = self.ask({"Which Tailscale?": "app"}, this_os="linux")   # from Linux: another Mac only
+        self.assertFalse(got["here"])
+        self.assertIn("Which Mac?", ui.said)
 
     def test_a_site_host_needs_no_more_questions(self):
-        ui = FakeUI({"Which machine joins?": "cn-control"})
-        self.assertEqual(targets.ask(self.site, ui, ["cn-control"]), {"host": "cn-control"})
+        got, ui = self.ask({"Which machine?": "cn-control"})
+        self.assertEqual(got, {"host": "cn-control", "os_name": "linux"})
         self.assertEqual(ui.notes, ["cn-control is the control host of cn: it joins cn as a server."])
 
     def test_options_skip_their_questions(self):
-        ui = FakeUI({})
-        got = targets.ask(self.site, ui, host="box", given={"role": "server", "region": "cn"}, pick=False)
+        got, ui = self.ask({}, host="box", given={"role": "server", "region": "cn"}, pick=False)
         self.assertEqual(got, {"host": "box", "name": "box"})
         self.assertEqual(ui.asked, ["Its name in the tailnet"])
+        got, ui = self.ask({"Which Mac?": "other"}, this_os="macos", given={"app": True})
+        self.assertNotIn("Which Tailscale?", ui.asked)                # --app answers it
 
     def test_another_machine_by_alias(self):
-        ui = FakeUI({"Which machine joins?": "?", "SSH alias": "far-box", "Which region?": "ovs"})
-        got = targets.ask(self.site, ui, [])
-        self.assertEqual(got, {"host": "far-box", "role": "server", "region": "ovs", "name": "far-box"})
+        got, _ui = self.ask({"Which machine?": "?", "SSH alias": "far-box", "Which region?": "ovs"})
+        self.assertEqual(got, {"host": "far-box", "os_name": "linux", "role": "server", "region": "ovs",
+                               "name": "far-box"})
 
 
 class TuiTest(unittest.TestCase):

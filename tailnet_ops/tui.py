@@ -66,6 +66,10 @@ class UI:
         """A command to copy: on its own line, indented, nothing else on it."""
         self._write(f"\n    {text}\n\n")
 
+    def chosen(self, title, answer):
+        """Say the answer to a question that had only one."""
+        self._done(title, answer)
+
     def _done(self, title, answer):
         self._write(f"{self.accent('✔')} {self.bold(title)} {self.accent(answer)}\n")
 

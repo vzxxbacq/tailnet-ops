@@ -95,7 +95,7 @@ pass() { printf '  ok    %s\n' "$*"; }
 flag() { printf '  FAIL  %s\n' "$*"; fail=1; }
 
 os=$( (. /etc/os-release && echo "$PRETTY_NAME") 2>/dev/null || echo unknown)
-if [ "$(uname -s)" = Linux ]; then pass "OS: $os"; else flag "OS: not Linux ($os)"; fi
+if [ "$(uname -s)" = Linux ]; then pass "OS: $os"; else flag "OS: not Linux ($(uname -s)); join it with --os macos"; fi
 echo "TN-FACT os=$os"
 case "$(uname -m)" in
   x86_64) arch=amd64 ;;
