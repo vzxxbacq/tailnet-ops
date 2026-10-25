@@ -109,10 +109,10 @@ if [ "$(id -u)" = 0 ]; then pass "running as root"; else flag "not running as ro
 if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then pass "systemd"; else flag "systemd is not running"; fi
 if [ -c /dev/net/tun ]; then pass "/dev/net/tun"; else flag "/dev/net/tun is missing"; fi
 missing=""
-for c in curl sha256sum install update-ca-certificates ip ss; do
+for c in curl sha256sum tar install update-ca-certificates ip ss; do
   command -v "$c" >/dev/null || missing="$missing $c"
 done
-if [ -z "$missing" ]; then pass "tools: curl sha256sum install update-ca-certificates ip ss"; else flag "missing tools:$missing"; fi
+if [ -z "$missing" ]; then pass "tools: curl sha256sum tar install update-ca-certificates ip ss"; else flag "missing tools:$missing"; fi
 
 lines=$(ss -H -lunp "sport = :$TS_PORT" 2>/dev/null || true)
 if [ -z "$lines" ]; then pass "udp/$TS_PORT free (Tailscale)"; echo "TN-FACT port=free"
@@ -170,6 +170,30 @@ echo "preflight passed; nothing was changed"
 
 STAGE = r"""d=$(mktemp -d /tmp/tn-tailscale.XXXXXXXX)
 echo "TN-FACT stage=$d"
+"""
+
+# The host fetches the pinned archive itself: uploading it from the operator's machine can be slow.
+# A failed download is not an error (this machine then uploads it); a wrong one is.
+DOWNLOAD = r"""stage=${1:?staging directory}
+url=${2:?archive url}
+want=${3:?archive sha256}
+folder=${4:?folder inside the archive}
+case "$stage" in /tmp/tn-tailscale.*) ;; *) die "unexpected staging path $stage" ;; esac
+echo "downloading $url"
+if ! curl -fsSL --max-time 600 --retry 2 -o "$stage/tailscale.tgz" "$url"; then
+  rm -f "$stage/tailscale.tgz"
+  echo "TN-FACT download=failed"
+  exit 0
+fi
+got=$(sha256sum "$stage/tailscale.tgz" | cut -d' ' -f1)
+if [ "$got" != "$want" ]; then
+  rm -rf "$stage"
+  die "the download does not match its pinned sha256: $got"
+fi
+tar -xzf "$stage/tailscale.tgz" -C "$stage" --strip-components=1 "$folder/tailscale" "$folder/tailscaled"
+rm -f "$stage/tailscale.tgz"
+echo "archive sha256 ok"
+echo "TN-FACT download=ok"
 """
 
 INSTALL_BINARIES = r"""stage=${1:?staging directory}
@@ -626,13 +650,17 @@ class Join(Procedure):
         if all(self.facts.get(name) == want[name] for name in want):
             self.out("    the pinned Tailscale build is already installed; nothing to upload")
             return
-        paths = self.ops.binaries(arch)
         stage = self._host(STAGE, privileged=False).facts().get("stage", "")
         if not stage.startswith("/tmp/tn-tailscale."):
             raise StepError(f"unexpected staging directory {stage!r}")
-        for name, path in paths.items():
-            self.out(f"    uploading {name} to {stage}/")
-            self.runner.upload(self.alias, path, f"{stage}/{name}")
+        self.out(f"    {self.alias} downloads Tailscale {pins.TAILSCALE_VERSION} itself")
+        got = self._host(DOWNLOAD, privileged=False, args=[
+            stage, pins.tailscale_url(arch), pins.TAILSCALE_SHA256[arch], f"tailscale_{pins.TAILSCALE_VERSION}_{arch}"])
+        if got.facts().get("download") != "ok":
+            self.out(f"    {self.alias} could not download it; this machine downloads it and uploads it instead")
+            for name, path in self.ops.binaries(arch).items():
+                self.out(f"    uploading {name} to {stage}/")
+                self.runner.upload(self.alias, path, f"{stage}/{name}")
         self._host(INSTALL_BINARIES, args=[stage])
 
     def _install_ca(self, ca):
@@ -971,13 +999,16 @@ class Join(Procedure):
             ),
             Step(
                 2, "Binaries",
-                [f"Download the static Tailscale {pins.TAILSCALE_VERSION} for the architecture preflight reports into cache/,",
-                 "check the archive's pinned sha256 and each binary's; copy them to the host, check again,",
-                 f"install {TS_BIN} and {TSD_BIN}. Skipped when the pinned build is already installed."],
+                [f"The host downloads the static Tailscale {pins.TAILSCALE_VERSION} for its architecture from pkgs.tailscale.com",
+                 "and checks the archive's pinned sha256. If it cannot download it, this machine downloads it into",
+                 "cache/ and copies the two binaries over. Each binary's pinned sha256 is checked before",
+                 f"{TS_BIN} and {TSD_BIN} are installed. Skipped when the pinned build is already installed."],
                 [
-                    Action("local", f"fetch {pins.tailscale_url('<arch>')} unless cached; verify the .tgz and both binaries"),
                     Action(a, "make a staging directory", STAGE, "host", False),
-                    Action("local", "scp tailscale and tailscaled to <staging directory>/"),
+                    Action(a, "download and check the archive; $1 staging directory, $2 url, $3 sha256, $4 folder",
+                           DOWNLOAD, "host", False),
+                    Action("local", f"only if the host could not download it: fetch {pins.tailscale_url('<arch>')} "
+                           "unless cached, verify it, scp tailscale and tailscaled to <staging directory>/"),
                     Action(a, "verify and install; $1 is the staging directory", INSTALL_BINARIES, "host", True),
                 ],
                 rollback=ROLLBACK_BINARIES, rollback_note="remove both binaries if they are the pinned build",

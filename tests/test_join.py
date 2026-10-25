@@ -227,6 +227,29 @@ class JoinApplyTest(TempDirTest):
         self.assertIn("    verify passed", self.out)
         self.assertIn("    ✓ reaches ovs-line in ovs at 10.255.2.4 through line line1", self.out)
 
+    def test_the_host_downloads_tailscale_itself(self):
+        runner, ops = FakeRunner({**responses(), join.DOWNLOAD: "TN-FACT download=ok\n"}), FakeOps()
+        job = self.job(runner, ops=ops)
+        job.facts["arch"] = "amd64"
+        job._run_binaries()
+        download = [c for c in runner.calls if c[0] == "run" and join.DOWNLOAD in c[2]][0]
+        self.assertEqual(download[3], ("/tmp/tn-tailscale.abc123", pins.tailscale_url("amd64"),
+                                       pins.TAILSCALE_SHA256["amd64"], f"tailscale_{pins.TAILSCALE_VERSION}_amd64"))
+        self.assertFalse(download[4])                                # as the SSH user, into its staging directory
+        self.assertEqual(ops.calls, [])                              # nothing fetched or uploaded from here
+        self.assertFalse(any(c[0] == "upload" for c in runner.calls))
+        self.assertTrue(any(join.INSTALL_BINARIES in c[2] for c in runner.calls if c[0] == "run"))
+
+    def test_upload_when_the_host_cannot_download(self):
+        runner, ops = FakeRunner({**responses(), join.DOWNLOAD: "TN-FACT download=failed\n"}), FakeOps()
+        job = self.job(runner, ops=ops)
+        job.facts["arch"] = "amd64"
+        job._run_binaries()
+        self.assertEqual(ops.calls, [("binaries", "amd64")])
+        self.assertEqual([c[3] for c in runner.calls if c[0] == "upload"],
+                         ["/tmp/tn-tailscale.abc123/tailscale", "/tmp/tn-tailscale.abc123/tailscaled"])
+        self.assertIn("    cn-probe could not download it; this machine downloads it and uploads it instead", self.out)
+
     def test_cross_region_failures(self):
         runner = FakeRunner(responses(status=status(), routes=""))
         with self.assertRaises(StepError) as cm:
@@ -411,6 +434,39 @@ class JoinScriptsTest(TempDirTest):
         self.assertTrue((root / "ts_state").exists())
         self.assertTrue((root / "ts_unit").exists())
         self.assertNotIn("disable", log)
+
+    def download(self, archive_bytes, want=None, curl_ok=True):
+        stage = Path("/tmp") / f"tn-tailscale.dl{os.getpid()}"
+        stage.mkdir(exist_ok=True)
+        src = self.tmp / "archive.tgz"
+        src.write_bytes(archive_bytes)
+        want = want or hashlib.sha256(archive_bytes).hexdigest()
+        fake_curl = f'curl() {{ cp {src} "$7"; }}\n' if curl_ok else "curl() { return 7; }\n"
+        body = fake_curl + f"set -- {stage} https://example.invalid/x.tgz {want} tailscale_9_amd64\n" + join.DOWNLOAD
+        p, _root, _log = self.sandbox(body)
+        return p, stage
+
+    def test_download_checks_the_archive(self):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tgz:
+            for name in ("tailscale", "tailscaled", "systemd/tailscaled.service"):
+                info = tarfile.TarInfo(f"tailscale_9_amd64/{name}")
+                info.size = len(name)
+                tgz.addfile(info, io.BytesIO(name.encode()))
+        try:
+            p, stage = self.download(buf.getvalue())
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertIn("TN-FACT download=ok", p.stdout)
+            self.assertEqual(sorted(x.name for x in stage.iterdir()), ["tailscale", "tailscaled"])
+            p, stage = self.download(buf.getvalue(), want="0" * 64)
+            self.assertNotEqual(p.returncode, 0)
+            self.assertIn("does not match its pinned sha256", p.stderr)
+            self.assertFalse(stage.exists())                         # a wrong archive is thrown away
+            p, stage = self.download(b"", curl_ok=False)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertIn("TN-FACT download=failed", p.stdout)
+        finally:
+            shutil.rmtree(Path("/tmp") / f"tn-tailscale.dl{os.getpid()}", ignore_errors=True)
 
     def test_install_rejects_wrong_binaries(self):
         stage = Path("/tmp") / f"tn-tailscale.test{os.getpid()}"
