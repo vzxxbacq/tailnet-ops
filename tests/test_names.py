@@ -21,17 +21,19 @@ class NamesTest(TempDirTest):
 
     def test_each_region_gets_the_others_hosts_at_their_aliases(self):
         recs, skipped = names.records(self.site, self.site.regions["cn"], self.nodes)
-        self.assertEqual(recs, [
-            {"name": "ovs-control.tailnet.internal", "type": "A", "value": "10.255.2.1"},
-            {"name": "ovs-line.tailnet.internal", "type": "A", "value": "10.255.2.4"},
-        ])
-        self.assertEqual(skipped, ["shared (also a host in cn)"])
+        by_name = {r["name"]: r["value"] for r in recs}
+        self.assertEqual(by_name["ovs-control.tailnet.internal"], "10.255.2.1")
+        self.assertEqual(by_name["ovs-line.ovs.tailnet.internal"], "10.255.2.4")      # with the region
+        self.assertEqual(by_name["cn-gateway.cn.tailnet.internal"], "100.64.1.2")     # own host, with the region
+        self.assertEqual(by_name["shared.ovs.tailnet.internal"], "10.255.2.9")        # a clash still has this form
+        self.assertNotIn("shared.tailnet.internal", by_name)
+        self.assertEqual(skipped, ["shared.tailnet.internal (also a host in cn; use shared.ovs.tailnet.internal)"])
         recs, _ = names.records(self.site, self.site.regions["ovs"], self.nodes)
         self.assertIn({"name": "cn-gateway.tailnet.internal", "type": "A", "value": "10.255.1.2"}, recs)
 
     def test_no_line_no_names(self):
         recs, _ = names.records(self.site, self.site.regions["cn"], self.nodes, skip_lines=("line1",))
-        self.assertEqual(recs, [])
+        self.assertTrue(recs and all(r["value"].startswith("100.64.1.") for r in recs))  # only its own hosts
 
     def test_write_script(self):
         body = names.write([{"name": "a.tailnet.internal", "type": "A", "value": "10.255.2.1"}])

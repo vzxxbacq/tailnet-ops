@@ -1,9 +1,10 @@
 """Names across regions.
 
-Every host is `<name>.<suffix>`, the same name in every region. A region's own hosts are
-answered by MagicDNS from its Headscale; the hosts of the regions it reaches through a line
-are extra records that point at their alias addresses. tailnet-ops keeps those records in
-each Headscale's extra records file, which Headscale reloads when it changes.
+Every host is `<name>.<suffix>` and `<name>.<region>.<suffix>`, the same names in every region.
+A region's own hosts are answered by MagicDNS from its Headscale (the short name) and by extra
+records (the name with the region); the hosts of the regions it reaches through a line are
+extra records that point at their alias addresses. tailnet-ops keeps those records in each
+Headscale's extra records file, which Headscale reloads when it changes.
 """
 
 import ipaddress
@@ -31,9 +32,14 @@ def node_ipv4(node, region):
 
 
 def records(site, region, nodes_by_region, skip_lines=()):
-    """(records, skipped): A records for the hosts of every region this one reaches."""
+    """(records, skipped): A records for this region's hosts with the region in the name, and
+    for the hosts of every region this one reaches, with and without their region."""
     local = {str(n.get("given_name", "")).lower() for n in nodes_by_region.get(region.name, [])}
     out, skipped, seen = [], [], set()
+    for n in nodes_by_region.get(region.name, []):
+        name, ip = str(n.get("given_name", "")).lower(), node_ipv4(n, region)
+        if name and ip:
+            out.append({"name": f"{name}.{region.name}.{region.base_domain}", "type": "A", "value": ip})
     for _ln, other in render.line_peers(site, region, skip_lines):
         if other.name in seen or other.alias_net is None:
             continue
@@ -42,10 +48,13 @@ def records(site, region, nodes_by_region, skip_lines=()):
             name, ip = str(n.get("given_name", "")).lower(), node_ipv4(n, other)
             if not name or ip is None:
                 continue
+            alias = other.alias_of(ip)
+            out.append({"name": f"{name}.{other.name}.{region.base_domain}", "type": "A", "value": alias})
             if name in local:
-                skipped.append(f"{name} (also a host in {region.name})")
+                skipped.append(f"{name}.{region.base_domain} (also a host in {region.name}; "
+                               f"use {name}.{other.name}.{region.base_domain})")
                 continue
-            out.append({"name": f"{name}.{region.base_domain}", "type": "A", "value": other.alias_of(ip)})
+            out.append({"name": f"{name}.{region.base_domain}", "type": "A", "value": alias})
     return sorted(out, key=lambda r: r["name"]), skipped
 
 
@@ -102,6 +111,8 @@ class Names:
                 ip = node_ipv4(n, r)
                 if ip:
                     rows.append((name, f"{str(n.get('given_name', '')).lower()}.{r.base_domain}", ip, "this region"))
+            net = ipaddress.ip_network(r.ipv4_prefix)
             for rec in planned[name][0]:
-                rows.append((name, rec["name"], rec["value"], "through a line"))
+                here = ipaddress.ip_address(rec["value"]) in net
+                rows.append((name, rec["name"], rec["value"], "this region" if here else "through a line"))
         return rows
