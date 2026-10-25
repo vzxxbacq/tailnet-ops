@@ -40,20 +40,25 @@ class Result:
         return None
 
 
+# What sudo shows on the machine that runs tn, so a bare "Password:" is not a riddle.
+SUDO_PROMPT = "[sudo] password of %u on this machine (tn runs its scripts here as root): "
+LOCAL_SUDO = f"sudo -p {shlex.quote(SUDO_PROMPT)}"
+
+
 def remote_command(args=(), privileged=False, interactive=False):
     """`bash -s` with args, as root when privileged. Over SSH sudo must not prompt (-n); on the
     machine that runs tn (interactive) it may ask for the password on the terminal."""
     argv = " ".join(shlex.quote(a) for a in ("bash", "-s", "--", *args))
     if not privileged:
         return argv
-    sudo = "sudo" if interactive else "sudo -n"
+    sudo = LOCAL_SUDO if interactive else "sudo -n"
     return f'if [ "$(id -u)" = 0 ]; then exec {argv}; else exec {sudo} {argv}; fi'
 
 
 def privileged_command(argv, interactive=False):
     """A command line that runs argv as root (directly, or through sudo)."""
     line = " ".join(shlex.quote(a) for a in argv)
-    sudo = "sudo" if interactive else "sudo -n"
+    sudo = LOCAL_SUDO if interactive else "sudo -n"
     return f'if [ "$(id -u)" = 0 ]; then exec {line}; else exec {sudo} {line}; fi'
 
 

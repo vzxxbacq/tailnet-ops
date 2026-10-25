@@ -7,9 +7,9 @@ class LocalRunnerTest(TempDirTest):
         runner = remote.SSHRunner(local_hosts=["vault"])
         self.assertEqual(runner.command("vault", "true"), ["bash", "-c", "true"])
         self.assertEqual(runner.command("edge", "true")[0], "ssh")
-        self.assertIn("exec sudo bash -s", remote.remote_command((), True, interactive=True))
+        self.assertIn("exec sudo -p '[sudo] password of %u on this machine", remote.remote_command((), True, interactive=True))
         self.assertIn("exec sudo -n bash -s", remote.remote_command((), True))
-        self.assertIn("exec sudo /usr/local/bin/tailscale up", remote.privileged_command(["/usr/local/bin/tailscale", "up"], True))
+        self.assertIn("as root): ' /usr/local/bin/tailscale up", remote.privileged_command(["/usr/local/bin/tailscale", "up"], True))
 
     def test_local_run_and_copy(self):
         runner = remote.SSHRunner(out=lambda s: None, local_hosts=["here"])
