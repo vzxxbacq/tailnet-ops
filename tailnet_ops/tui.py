@@ -109,6 +109,13 @@ class UI:
             self._write(f"  {problem}\n")
         raise ValueError(f"no valid answer for: {title}")
 
+    def pasted(self, title, begin, end):
+        """One line, or several pasted lines from the one holding begin to the one holding end."""
+        lines = [self._line(f"{self.accent('?')} {self.bold(title)} ")]
+        while begin in lines[0] and end not in lines[-1]:
+            lines.append(self._line(""))
+        return "\n".join(lines)
+
     def confirm(self, title, default=False):
         answer = self.text(f"{title} {'[Y/n]' if default else '[y/N]'}", "y" if default else "n",
                            check=lambda v: None if v.lower() in ("y", "yes", "n", "no") else "y or n")

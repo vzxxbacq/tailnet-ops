@@ -183,6 +183,7 @@ def cmd_join(args):
     job.forget = lambda m: targets.forget(site, m)
     if ui.tty:
         job.ask_code = code_asker(ui)
+        job.ask_ca = ca_asker(ui)
     try:
         if action is None:
             return join_asked(job, console, ui, target, offline=args.offline)
@@ -207,6 +208,36 @@ def code_asker(ui):
     return ask
 
 
+def ca_asker(ui):
+    """When there is no site CA here and no control host gives it: show how to print ca.crt
+    elsewhere, then read the pasted certificate or the path of a copy. None if none was usable."""
+    from . import siteca
+
+    def ask(region, why, accept):
+        ui.say()
+        ui.warn(f"No site CA here, and tn cannot read it from the control hosts ({why}).")
+        ui.say("Print ca.crt with one of these (it is public; never copy ca.key), then paste it here, "
+               "or give the path of a copy.")
+        for where, command in siteca.commands(region):
+            ui.say(f"  {where}:")
+            ui.command(command)
+        for _ in range(3):
+            text = ui.pasted("Site CA certificate (paste it, or a file path)", "-----BEGIN", "-----END")
+            if text and "-----BEGIN" not in text:
+                try:
+                    text = Path(text).expanduser().read_text()
+                except (OSError, UnicodeDecodeError) as e:
+                    ui.say(f"  cannot read {text}: {getattr(e, 'strerror', None) or e}")
+                    continue
+            pem, problem = accept(text)
+            if pem:
+                ui.chosen("Site CA certificate", "checked against the login servers")
+                return pem
+            ui.say(f"  {problem}")
+        return None
+    return ask
+
+
 def join_app(site, args, action, name, region, ui, here=False):
     """A Mac with the Tailscale app. here: this machine, which tn sets up itself; else tn hands the
     Mac a profile and one block to paste."""
@@ -226,6 +257,9 @@ def join_app(site, args, action, name, region, ui, here=False):
 
     job.remember = remember
     job.forget = lambda j: targets.forget(site, j)
+    if ui.tty:
+        job.ask_code = code_asker(ui)
+        job.ask_ca = ca_asker(ui)
     if ui.tty and not args.yes:
         job.pause = input
     later = (f"./tn join apply --app --region {job.region.name}" + ("" if name == targets.this_machine_name()

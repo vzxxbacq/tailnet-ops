@@ -1,9 +1,11 @@
 """`tn join --app`: a Mac that runs the Tailscale app joins every region as the owner.
 
-tn runs on a machine that can log in to the control hosts. For another Mac, which needs no SSH,
-keys or tn, it writes a configuration profile for the app and hands over one block to paste into
-that Mac's Terminal. For this machine (here) it opens the profile and runs the block itself.
+tn runs best on a machine that can log in to the control hosts. For another Mac, which needs no
+SSH, keys or tn, it writes a configuration profile for the app and hands over one block to paste
+into that Mac's Terminal. For this machine (here) it opens the profile and runs the block itself.
 Then it waits until every region lists the Mac, updates names and writes a Clash Verge script.
+Where tn cannot log in, the user makes each link code there by hand and pastes it, and pastes the
+site CA too if this machine has none; tn then cannot watch, name or check the Mac in that region.
 """
 
 import shutil
@@ -11,11 +13,12 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import apple, join, macos, names, pins, scripts, siteca
+from . import apple, join, macos, names, pins, render, scripts, siteca
 from .procedure import Action, Procedure, Step, StepError
 from .site import dns_label, ensure_private_dir, write_private
 
 WAIT_SECONDS = 15 * 60
+PASTED = "your paste"
 
 
 class AppJoin(Procedure):
@@ -41,6 +44,9 @@ class AppJoin(Procedure):
         self.local = local or Local()
         self.remember = self.forget = None
         self.pause = None            # set in a terminal: wait until the profile is on the Mac
+        self.ask_code = None         # set in a terminal: (region, commands) -> a pasted link code
+        self.ask_ca = None           # set in a terminal: (region, why, accept) -> a pasted site CA, or None
+        self._reach = {}
         self.sleep = time.sleep
         self.users = {}
         out_dir = site.directory / "out"
@@ -53,12 +59,29 @@ class AppJoin(Procedure):
         return self.runner.run(region.control_host, scripts.wrap(scripts.control_prelude(self.site, region), body),
                                privileged=True, echo=echo, check=check, secret=secret)
 
+    def can_reach(self, region):
+        """Whether this machine can run Headscale as root on the region's control host."""
+        if region.name not in self._reach:
+            try:
+                rc = self._on_control(region, join.CONTROL_PING, check=False).rc
+            except Procedure.errors:
+                rc = 1
+            self._reach[region.name] = rc == 0
+        return self._reach[region.name]
+
+    def unreachable(self):
+        return [r for r in self.regions if not self.can_reach(r)]
+
     def _ca(self):
-        """pki/ca.crt, else the copy on the control hosts (checked against their TLS)."""
+        """pki/ca.crt, else the copy on the control hosts (checked against their TLS), else one the
+        user pastes (checked the same way)."""
         if self.ca_pem is None:
             self.ca_pem = siteca.local(self.site)
         if self.ca_pem is None:
             pem, source = siteca.fetch(self.site, self.runner, self.regions)
+            if pem is None and self.ask_ca:
+                pem = self.ask_ca(self.region, source, lambda text: siteca.pasted(text, self.regions))
+                source = PASTED if pem else source
             if pem is None:
                 raise StepError(f"{siteca.missing(self.site, self.region)}; from the control hosts: {source}")
             self.ca_pem, self.ca_from = pem, source
@@ -79,14 +102,20 @@ class AppJoin(Procedure):
         self.out(f"    {region.name}: renaming {node.get('given_name')} to {self.label}")
         self._on_control(region, f'"$BIN" nodes rename -i {int(node.get("id"))} {self.label}\n', echo=True)
 
+    def _accounts_step(self):
+        return next(s.number for s in self.steps() if s.title == "Accounts")
+
     def check(self):
-        """Read-only: every control host answers as root and has the owner's Headscale user."""
+        """Read-only: every control host answers as root and has the owner's Headscale user. One that
+        does not needs a link code made there by hand, pasted in a terminal."""
         fails = []
         for r in self.regions:
-            result = self._on_control(r, join.USERS_JSON, check=False)
-            if result.rc != 0:
-                fails.append(f"cannot log in to {r.control_host} as root; tn join --app runs where you can")
+            if not self.can_reach(r):
+                if self.ask_code is None:
+                    fails.append(f"cannot log in to {r.control_host} as root; run tn join in a terminal to paste "
+                                 f"a link code made there: {join.code_commands(self.site, r, [])[0][1]}")
                 continue
+            result = self._on_control(r, join.USERS_JSON, check=False)
             users = join._json(result.output or "[]", "headscale users list") or []
             found = [u.get("id") for u in users if u.get("name") == self.site.owner_user]
             if not found:
@@ -99,7 +128,7 @@ class AppJoin(Procedure):
             fails.append(str(e))
         if self.here:
             fails += self.local.problems()
-        return {"facts": {}, "fails": fails}
+        return {"facts": {}, "fails": fails, "codes": [r.name for r in self.unreachable()]}
 
     # --- steps ------------------------------------------------------------------------
 
@@ -109,7 +138,11 @@ class AppJoin(Procedure):
             self.out(f"    ✗ {f}")
         if checks["fails"]:
             raise StepError("not ready")
-        self.out(f"    every control host answers; user {self.site.owner_user} is in every region")
+        for r in self.unreachable():
+            self.out(f"    {r.name}: this machine cannot log in to {r.control_host}; step {self._accounts_step()} "
+                     "asks for a link code")
+        if not checks["codes"]:
+            self.out(f"    every control host answers; user {self.site.owner_user} is in every region")
 
     def _untrust_hint(self):
         ca = self.ca_pem or siteca.local(self.site)
@@ -144,6 +177,11 @@ class AppJoin(Procedure):
             self.pause("    Press Enter once the profile is installed on the Mac (the keys are made then) ")
         keys = {}
         for r in self.regions:
+            if not self.can_reach(r):
+                if self.ask_code is None:
+                    raise StepError(f"cannot log in to {r.control_host}; run tn join in a terminal to paste a link code")
+                keys[r.name] = self.ask_code(r, join.code_commands(self.site, r, []))
+                continue
             if r.name not in self.users:
                 raise StepError("run the check first")
             output = self._on_control(r, join.user_key(self.users[r.name], pins.JOIN_CODE_EXPIRY), secret=True).output
@@ -153,7 +191,10 @@ class AppJoin(Procedure):
             keys[r.name] = key
         block = apple.login_block(self.site, self.regions, keys, self.region, None if self.here else self._ca(),
                                   self.label)
-        self.out(f"    made a single-use, {pins.JOIN_CODE_EXPIRY} key in each region for user {self.site.owner_user}")
+        made = [r.name for r in self.regions if self.can_reach(r)]
+        if made:
+            where = "each region" if len(made) == len(self.regions) else ", ".join(made)
+            self.out(f"    made a single-use, {pins.JOIN_CODE_EXPIRY} key in {where} for user {self.site.owner_user}")
         if self.here:
             self.out("    adding an account for each region to the Tailscale app here; the keys are not shown or stored")
             if self.local.run(block, self.out) != 0:
@@ -167,7 +208,13 @@ class AppJoin(Procedure):
                  f"{self.region.name}. The keys are used once and never stored.")
 
     def _run_wait(self):
-        waiting = {r.name for r in self.regions}
+        said = "the Tailscale app said above" if self.here else "the block on the Mac says"
+        for r in self.unreachable():
+            self.out(f"    {r.name}: not watched (this machine cannot log in to {r.control_host}); "
+                     f"{said} whether it joined")
+        waiting = {r.name for r in self.regions if self.can_reach(r)}
+        if not waiting:
+            return
         deadline = time.monotonic() + WAIT_SECONDS
         self.out(f"    waiting for the Mac to appear in {', '.join(sorted(waiting))} (Ctrl-C to stop; "
                  f"`tn join verify {self.name}` checks later)")
@@ -187,11 +234,19 @@ class AppJoin(Procedure):
             self.sleep(5)
 
     def _run_names(self):
+        missing = self.unreachable()
+        if missing:
+            self.out(f"    skipped: this machine cannot log in to {', '.join(r.control_host for r in missing)}. "
+                     "Run `tn dns sync` on a machine that can; until then the other regions do not know this name.")
+            return
         names.Names(self.site, self.runner, self.out).sync()
 
     def _run_verify(self):
         problems = []
         for r in self.regions:
+            if not self.can_reach(r):
+                self.out(f"    {r.control_host}: not checked (this machine cannot log in to it)")
+                continue
             mine = self._mine(self._nodes(r))
             tags = sorted({t for n in mine for t in (n.get("tags") or n.get("forced_tags") or [])})
             online = any(n.get("online") for n in mine)
@@ -203,7 +258,10 @@ class AppJoin(Procedure):
                 problems.append(f"{self.label} in {r.name} has tags; a personal device has none")
         if problems:
             raise StepError("; ".join(problems))
-        self.out(f"    verify passed; on the Mac, switch region in the Tailscale menu: "
+        checked = [r.name for r in self.regions if self.can_reach(r)]
+        verdict = ("verify passed" if len(checked) == len(self.regions)
+                   else f"verify passed in {', '.join(checked)}" if checked else "nothing verified from here")
+        self.out(f"    {verdict}; on the Mac, switch region in the Tailscale menu: "
                  f"{', '.join(r.name for r in self.regions)}")
 
     def _run_clash(self):
@@ -215,6 +273,11 @@ class AppJoin(Procedure):
 
     def _undo_accounts(self):
         for r in self.regions:
+            if not self.can_reach(r):
+                self.out(f"    this machine cannot log in to {r.control_host}; delete the node there by hand:\n"
+                         f"      sudo {render.BIN} nodes list | grep -w {self.label}\n"
+                         f"      sudo {render.BIN} nodes delete -i <ID> --force")
+                continue
             nodes = self._nodes(r)
             mine = self._mine(nodes)
             if not mine:
@@ -260,6 +323,9 @@ class AppJoin(Procedure):
                   f"to each region as an account named after it, and ends on {self.region.name}. Keys are not logged."],
                  [Action(controls, "make a key in each region (read here, never logged)",
                          join.user_key("<user id>", pins.JOIN_CODE_EXPIRY), "control", True),
+                  *[Action("you", f"only if this machine cannot log in to {r.control_host}: make a single-use, "
+                           f"{pins.JOIN_CODE_EXPIRY} link code there, and paste it when this step asks",
+                           join.code_commands(self.site, r, [])[0][1] + "\n") for r in self.regions],
                   Action("you", "paste on the Mac", apple.login_block(self.site, self.regions,
                                                                      {r.name: "<key>" for r in self.regions},
                                                                      self.region, None, self.label))],
@@ -364,10 +430,16 @@ class AppJoin(Procedure):
         out.append(f"  this machine  writes {self.profile_path.parent}/{self.name}.*, makes single-use keys")
         if self.ca_from:
             out.append(f"  site CA       from {self.ca_from}: it authenticates every login server; a copy goes to pki/")
+        for name in (checks or {}).get("codes", []):
+            x = self.site.region(name)
+            out.append(f"  link code     ✗ this machine cannot log in to {x.control_host}: step {self._accounts_step()} "
+                       "shows a command to make a link code there, then asks you to paste it")
         if checks is None:
             out.append("  checks        not run (--offline)")
         elif checks["fails"]:
             out += ["", f"Not ready ({len(checks['fails'])}):"] + [f"  ✗ {f}" for f in checks["fails"]]
+        elif checks.get("codes"):
+            out += ["", f"✓ Ready: you paste a link code for {', '.join(checks['codes'])}."]
         else:
             out += ["", "✓ Ready: every control host answers."]
         return "\n".join(out)

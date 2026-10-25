@@ -613,6 +613,7 @@ class Join(Procedure):
             self.prelude = host_prelude(site, m.name, self.port, logins, self.mark)
         self.remember = self.forget = None   # set by the CLI: record the join, drop the record
         self.ask_code = None                  # set by the CLI: (region, commands) -> a pasted link code
+        self.ask_ca = None                    # set by the CLI: (region, why, accept) -> a pasted site CA, or None
         self._ca_pem = None
         self.ca_from = None                   # the control host the CA came from, when pki/ has none
         self._reach = {}
@@ -659,11 +660,15 @@ class Join(Procedure):
         return [r for r in self.regions if not self.can_reach(r)]
 
     def site_ca(self):
-        """(pem, why not): pki/ca.crt, else the copy on the control hosts (checked against their TLS)."""
+        """(pem, why not): pki/ca.crt, else the copy on the control hosts (checked against their TLS),
+        else one the user pastes (checked the same way)."""
         if self._ca_pem is None:
             self._ca_pem = self.ops.ca_pem()
         if self._ca_pem is None and self.runner is not None:
             pem, source = siteca.fetch(self.site, self.runner, self.regions)
+            if pem is None and self.ask_ca:
+                pem = self.ask_ca(self.region, source, lambda text: siteca.pasted(text, self.regions))
+                source = "your paste" if pem else source
             if pem is None:
                 return None, f"{siteca.missing(self.site, self.region)}; from the control hosts: {source}"
             self._ca_pem, self.ca_from = pem, source

@@ -7,10 +7,12 @@ import subprocess
 from unittest import mock
 
 from tailnet_ops import join, remote, targets, tui
+from tailnet_ops.appjoin import AppJoin
 from tailnet_ops.cli import code_asker
 from tailnet_ops.procedure import StepError
 from tailnet_ops.remote import RemoteError, Result
 from tests.helpers import FakeRunner, TempDirTest, bash
+from tests.test_apple import CA, KEY_CN, KEY_OVS, AppJoinTest, Runner as AppRunner
 from tests.test_join import FakeOps, responses, status
 
 CODE = "hskey-auth-" + "Ab3_x-9Q" * 3
@@ -115,6 +117,73 @@ class CodeTest(TempDirTest):
         self.assertIn("    verify passed", self.out)
         job._undo_join()
         self.assertTrue(any("nodes delete -i <ID> --force" in line for line in self.out))
+
+
+class AppNoControl(AppRunner):
+    """Control hosts that hand out keys, except the given ones, which this machine cannot log in to."""
+
+    def __init__(self, responses=None, down=("ovs-control",)):
+        super().__init__(responses)
+        self.down = set(down)
+
+    def run(self, host, script, args=(), privileged=False, check=True, echo=True, secret=False):
+        if host in self.down:
+            self.calls.append(("run", host, script, tuple(args), privileged))
+            if check:
+                raise RemoteError(f"script on {host} exited with 255")
+            return Result(255, "ssh: connect to host: Connection refused\n")
+        return super().run(host, script, args=args, privileged=privileged, check=check, echo=echo, secret=secret)
+
+
+class AppCodeTest(TempDirTest):
+    """tn join --app where this machine cannot log in to a control host: a link code made there."""
+
+    def setUp(self):
+        super().setUp()
+        self.site = self.load_site()
+        self.out, self.shown, self.clip, self.asked = [], [], [], []
+
+    def job(self, runner, ask=True):
+        job = AppJoin(self.site, "air", "cn", runner=runner, out=self.out.append, show=self.shown.append, ca_pem=CA,
+                      clipboard=lambda text: self.clip.append(text) or True)
+        job.sleep = lambda s: None
+        if ask:
+            job.ask_code = lambda region, commands: self.asked.append((region.name, commands)) or KEY_OVS
+        return job
+
+    def test_without_a_terminal_it_says_how(self):
+        checks = self.job(AppNoControl(AppJoinTest.responses()), ask=False).check()
+        self.assertEqual(len(checks["fails"]), 1)
+        self.assertIn("cannot log in to ovs-control as root; run tn join in a terminal", checks["fails"][0])
+        self.assertIn("preauthkeys create --expiration 30m --user", checks["fails"][0])
+
+    def test_apply_with_a_pasted_code(self):
+        runner = AppNoControl(AppJoinTest.responses())
+        job = self.job(runner)
+        checks = job.check()
+        self.assertEqual((checks["fails"], checks["codes"]), ([], ["ovs"]))
+        summary = job.summary_text(checks)
+        self.assertIn("link code     ✗ this machine cannot log in to ovs-control: step 3 shows a command", summary)
+        self.assertIn("✓ Ready: you paste a link code for ovs.", summary)
+        self.assertEqual(job.apply(yes=True), 0, "\n".join(self.out))
+        self.assertEqual([a[0] for a in self.asked], ["ovs"])
+        self.assertIn("--user", self.asked[0][1][0][1])                 # a personal key, without tags
+        self.assertEqual(runner.secrets, ["cn-control"])                 # only where tn can log in
+        self.assertIn(KEY_CN, self.clip[0])
+        self.assertIn(KEY_OVS, self.clip[0])
+        self.assertFalse(any(KEY_CN in line or KEY_OVS in line for line in self.out))
+        self.assertIn("    made a single-use, 30m key in cn for user owner", self.out)
+        self.assertIn("    ovs: not watched (this machine cannot log in to ovs-control); the block on the Mac says "
+                      "whether it joined", self.out)
+        self.assertTrue(any("Run `tn dns sync` on a machine that can" in line for line in self.out))
+        self.assertIn("    ovs-control: not checked (this machine cannot log in to it)", self.out)
+        self.assertIn("    verify passed in cn; on the Mac, switch region in the Tailscale menu: cn, ovs", self.out)
+
+    def test_rollback_says_what_to_delete_by_hand(self):
+        job = self.job(AppNoControl(AppJoinTest.responses()))
+        job._undo_accounts()
+        self.assertTrue(any("cannot log in to ovs-control; delete the node there by hand" in line
+                            and "nodes delete -i <ID> --force" in line for line in self.out))
 
 
 class CodePromptTest(TempDirTest):
