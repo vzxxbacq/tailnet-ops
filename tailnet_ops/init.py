@@ -42,8 +42,9 @@ class HostFacts:
     src: str = None
     resolvers: list = field(default_factory=list)
 
-    def port_busy(self, proto, port):
-        return any(p == proto and pt == port for p, _ip, pt, _o in self.listens)
+    def port_busy(self, proto, port, ours=()):
+        """True when something other than `ours` (process names) listens on the port."""
+        return any(p == proto and pt == port and o not in ours for p, _ip, pt, o in self.listens)
 
     def owners(self, proto, port):
         return sorted({o for p, _ip, pt, o in self.listens if p == proto and pt == port and o})
@@ -172,6 +173,9 @@ def ask_answers(asker):
             "control_host": asker.ask(f"  {name}: control host (SSH alias)", None, _check_alias),
             "check_from": asker.ask(f"  {name}: checker host in the same region (SSH alias)", None, _check_alias),
             "official_derp": asker.yes_no(f"  {name}: also use Tailscale's official DERP relays as a fallback?", False),
+            "ipv4_prefix": asker.ask(
+                f"  {name}: tailnet IPv4 prefix inside 100.64.0.0/10 (empty to pick a free /24)",
+                None, _check_prefix, allow_empty=True),
             "ports": parse_ports(asker.ask(
                 f"  {name}: ports the provider lets in to the control host, used in order for HTTPS, STUN and "
                 "Tailscale (e.g. 20000-20002; empty if any port can be opened)",
@@ -204,6 +208,16 @@ def parse_ports(text):
     return out
 
 
+def _check_prefix(text):
+    try:
+        net = ipaddress.IPv4Network(text)
+    except ValueError:
+        return "enter a prefix like 100.64.10.0/24 (the network address, then /length)"
+    if not net.subnet_of(CGNAT):
+        return "Tailscale clients only work with addresses inside 100.64.0.0/10"
+    return None
+
+
 def _check_ports(text):
     try:
         ports = parse_ports(text)
@@ -217,8 +231,8 @@ def _check_ports(text):
 def _pick_ports(facts, allowed):
     """Take allowed ports in order for HTTPS (tcp), STUN (udp) and Tailscale (udp), skipping busy ones."""
     pool, picks = list(allowed), []
-    for proto in ("tcp", "udp", "udp"):
-        while pool and facts.port_busy(proto, pool[0]):
+    for proto, ours in (("tcp", ("headscale",)), ("udp", ("headscale",)), ("udp", ("tailscaled",))):
+        while pool and facts.port_busy(proto, pool[0], ours):
             pool.pop(0)
         picks.append(pool.pop(0) if pool else None)
     return picks
@@ -240,16 +254,16 @@ def hosts_in(answers):
 # --- derivation ---------------------------------------------------------------------
 
 
-def _free_port(facts, proto, preferred, taken=()):
+def _free_port(facts, proto, preferred, taken=(), ours=("headscale",)):
     port = preferred
-    while facts.port_busy(proto, port) or port in taken:
+    while facts.port_busy(proto, port, ours) or port in taken:
         port += 1
     return port
 
 
 def _allocate_prefix(avoid, used):
     blocked = [ipaddress.IPv4Network(p) for p in avoid] + list(used) + list(TAILSCALE_RESERVED)
-    for net in CGNAT.subnets(new_prefix=16):
+    for net in CGNAT.subnets(new_prefix=24):
         if not any(net.overlaps(b) for b in blocked):
             return net
     raise ValueError("no free /16 left inside 100.64.0.0/10")
@@ -309,7 +323,11 @@ def derive(answers, facts, hostnames):
             comments[(table, "avoid_prefixes")] = f"resolvers inside 100.64.0.0/10: {', '.join(cgnat)}"
             notes.append(f"{host}: its resolvers ({', '.join(cgnat)}) sit inside 100.64.0.0/10. The prefix avoids "
                          f"{', '.join(avoid)}, and [hosts.{host}] gets netfilter_mode = \"off\" for when it joins.")
-        prefix = _allocate_prefix(avoid, used)
+        if ra.get("ipv4_prefix"):
+            prefix = ipaddress.IPv4Network(ra["ipv4_prefix"])
+            comments[(table, "ipv4_prefix")] = "chosen; one /24 per tailnet"
+        else:
+            prefix = _allocate_prefix(avoid, used)
         used.append(prefix)
         tags = [f"tag:{name}-server"]
         if host in initiators:

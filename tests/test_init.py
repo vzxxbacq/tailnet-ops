@@ -47,8 +47,8 @@ PROBE = "uid=1000\nroot=sudo\nos=Ubuntu 24.04 LTS\narch=x86_64\nsystemd=yes\ntoo
 
 ANSWERS = [
     "example", "",                                  # site name, owner user (default)
-    "cn", "cn-edge", "cn-probe", "n", "",           # region 1; any port can be opened
-    "ovs", "ovs-edge", "ovs-probe", "y", "20000-20002",  # region 2; the provider passes three ports
+    "cn", "cn-edge", "cn-probe", "n", "100.64.10.0/24", "",   # region 1; any port can be opened
+    "ovs", "ovs-edge", "ovs-probe", "y", "", "20000-20002",   # region 2; free /24; three ports pass
     "",                                             # no more regions
     "l1", "cn-edge", "ovs-edge", "203.0.113.30", "",  # line 1, one-way by default
     "",                                             # no more lines
@@ -60,14 +60,14 @@ EXPECTED = {
         "cn": {
             "control_host": "cn-edge", "check_from": "cn-probe",
             "public_ipv4": "198.51.100.10", "listen_ipv4": "0.0.0.0", "port": 9443, "stun_port": 3478,
-            "ipv4_prefix": "100.64.0.0/16", "avoid_prefixes": ["100.80.0.0/16"],
+            "ipv4_prefix": "100.64.10.0/24", "avoid_prefixes": ["100.80.0.0/16"],
             "base_domain": "cn.tailnet.internal", "derp_region_id": 901, "derp_region_code": "cn",
             "derp_region_name": "CN cn-edge", "official_derp": False, "tags": ["tag:cn-server", "tag:cn-gateway"],
         },
         "ovs": {
             "control_host": "ovs-edge", "check_from": "ovs-probe",
             "public_ipv4": "203.0.113.20", "listen_ipv4": "203.0.113.20", "port": 20000, "stun_port": 20001,
-            "ipv4_prefix": "100.65.0.0/16", "avoid_prefixes": [],
+            "ipv4_prefix": "100.64.0.0/24", "avoid_prefixes": [],
             "base_domain": "ovs.tailnet.internal", "derp_region_id": 902, "derp_region_code": "ovs",
             "derp_region_name": "OVS ovs-edge", "official_derp": True, "tags": ["tag:ovs-server", "tag:ovs-border"],
         },
@@ -118,6 +118,13 @@ class InitTest(unittest.TestCase):
         self.assertEqual(a["lines"][0]["one_way"], True)
         self.assertEqual(init.hosts_in(a), ["cn-edge", "cn-probe", "ovs-edge", "ovs-probe"])
 
+    def test_prefix_answer(self):
+        self.assertIsNone(init._check_prefix("100.64.20.0/24"))
+        outside = ".".join(["100", "10", "0", "0"]) + "/24"  # public space; built here so the guard passes
+        for bad in (outside, "100.64.10.1/24", "nope"):
+            self.assertIsNotNone(init._check_prefix(bad), bad)
+        self.assertEqual(str(init._allocate_prefix(["100.64.0.0/16"], [])), "100.65.0.0/24")
+
     def test_allowed_ports(self):
         self.assertEqual(init.parse_ports("20000-20002"), [20000, 20001, 20002])
         self.assertEqual(init.parse_ports(" 9443, 3478 ,"), [9443, 3478])
@@ -129,6 +136,9 @@ class InitTest(unittest.TestCase):
         busy = init.parse_facts("listen=udp 0.0.0.0:20001\n")
         self.assertEqual(init._pick_ports(busy, [20000, 20001, 20002, 20003]), [20000, 20002, 20003])
         self.assertEqual(init._pick_ports(busy, [20000, 20001]), [20000, None, None])
+        ours = init.parse_facts('listen=tcp 0.0.0.0:20000 users:(("headscale",pid=1,fd=3))\n'
+                                'listen=udp 0.0.0.0:20001 users:(("headscale",pid=1,fd=4))\n')
+        self.assertEqual(init._pick_ports(ours, [20000, 20001, 20002]), [20000, 20001, 20002])
 
     def test_bad_answer_is_asked_again(self):
         seen = []
