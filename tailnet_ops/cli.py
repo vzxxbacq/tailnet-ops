@@ -88,7 +88,7 @@ def cmd_site_check(args):
 def _deployment(args, kind):
     site = load_site(args)
     console = Console(Redactor(site) if args.redact else identity, run_log(site, kind, args.region))
-    runner = remote.SSHRunner(out=console.out, log=console.log)
+    runner = remote.SSHRunner(out=console.out, log=console.log, local_hosts=local_hosts(site))
     return Deployment(site, args.region, runner=runner, out=console.out), console
 
 
@@ -156,7 +156,8 @@ def cmd_dns(args):
     from .names import Names
     site = load_site(args)
     redact = Redactor(site) if args.redact else identity
-    names = Names(site, remote.SSHRunner(out=lambda s: print(redact(s))), out=lambda s: print(redact(s)))
+    names = Names(site, remote.SSHRunner(out=lambda s: print(redact(s)), local_hosts=local_hosts(site)),
+                  out=lambda s: print(redact(s)))
     if args.action == "list":
         rows = [("Region", "Name", "Short forms", "Address", "How")] + names.table()
         rows = [tuple(redact(c) for c in r) for r in rows]
@@ -176,11 +177,15 @@ def cmd_dns(args):
     return 0
 
 
+def local_hosts(site):
+    return [alias for alias, h in site.host_settings.items() if h.local]
+
+
 def run_checked(args, kind, name, make):
     """plan (with read-only checks unless --offline), apply, verify and rollback for join and line."""
     site = load_site(args)
     console = Console(Redactor(site) if args.redact else identity, run_log(site, f"{kind}-{args.action}", name))
-    runner = remote.SSHRunner(out=console.out, log=console.log)
+    runner = remote.SSHRunner(out=console.out, log=console.log, local_hosts=local_hosts(site))
     try:
         job = make(site, runner, console.out)
         if args.action == "plan":

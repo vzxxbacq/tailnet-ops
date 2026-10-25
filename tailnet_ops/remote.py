@@ -39,31 +39,49 @@ class Result:
         return None
 
 
-def remote_command(args=(), privileged=False):
+def remote_command(args=(), privileged=False, interactive=False):
+    """`bash -s` with args, as root when privileged. Over SSH sudo must not prompt (-n); on the
+    machine that runs tn (interactive) it may ask for the password on the terminal."""
     argv = " ".join(shlex.quote(a) for a in ("bash", "-s", "--", *args))
     if not privileged:
         return argv
-    return f'if [ "$(id -u)" = 0 ]; then exec {argv}; else exec sudo -n {argv}; fi'
+    sudo = "sudo" if interactive else "sudo -n"
+    return f'if [ "$(id -u)" = 0 ]; then exec {argv}; else exec {sudo} {argv}; fi'
 
 
-def privileged_command(argv):
-    """A remote command line that runs argv as root (directly, or through sudo -n)."""
+def privileged_command(argv, interactive=False):
+    """A command line that runs argv as root (directly, or through sudo)."""
     line = " ".join(shlex.quote(a) for a in argv)
-    return f'if [ "$(id -u)" = 0 ]; then exec {line}; else exec sudo -n {line}; fi'
+    sudo = "sudo" if interactive else "sudo -n"
+    return f'if [ "$(id -u)" = 0 ]; then exec {line}; else exec {sudo} {line}; fi'
 
 
 class SSHRunner:
-    def __init__(self, out=print, log=None):
+    """Runs scripts on hosts over SSH, except on `local_hosts` (the machine that runs tn),
+    where they run here directly."""
+
+    def __init__(self, out=print, log=None, local_hosts=()):
         self.out = out
         self.log = log
+        self.local_hosts = set(local_hosts)
+
+    def command(self, host, line):
+        """argv that runs a shell command line on host."""
+        if host in self.local_hosts:
+            return ["bash", "-c", line]
+        return ["ssh", *SSH_OPTS, host, line]
+
+    def _interactive(self, host):
+        return host in self.local_hosts
 
     def _log(self, text):
         if self.log is not None:
             self.log(text)
 
     def run(self, host, script, args=(), privileged=False, check=True, echo=True):
-        cmd = ["ssh", *SSH_OPTS, host, remote_command(args, privileged)]
-        self._log(f"$ ssh {host} {'(root)' if privileged else ''}\n{script}")
+        cmd = self.command(host, remote_command(args, privileged, self._interactive(host)))
+        where = "this machine" if host in self.local_hosts else f"ssh {host}"
+        self._log(f"$ {where} {'(root)' if privileged else ''}\n{script}")
         p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         p.stdin.write(script)
         p.stdin.close()
@@ -91,9 +109,9 @@ class SSHRunner:
         dst_host. The bytes go from one ssh process straight to the other: this process never
         reads, prints or logs them. Used for pre-auth keys."""
         self._log(f"$ ssh {src_host} (root) | ssh {dst_host} (root) {' '.join(dst_argv)}\n{src_script}")
-        src = subprocess.Popen(["ssh", *SSH_OPTS, src_host, remote_command((), True)],
+        src = subprocess.Popen(self.command(src_host, remote_command((), True, self._interactive(src_host))),
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        dst = subprocess.Popen(["ssh", *SSH_OPTS, dst_host, privileged_command(dst_argv)],
+        dst = subprocess.Popen(self.command(dst_host, privileged_command(dst_argv, self._interactive(dst_host))),
                                stdin=src.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         src.stdout.close()
         src.stdin.write(src_script.encode())
@@ -114,6 +132,12 @@ class SSHRunner:
             raise RemoteError(f"command on {dst_host} exited with {dst_rc}")
 
     def upload(self, host, local, remote):
+        if host in self.local_hosts:
+            self._log(f"$ cp {local} {remote}")
+            p = subprocess.run(["cp", str(local), remote], capture_output=True, text=True)
+            if p.returncode != 0:
+                raise RemoteError(f"copy to {remote} failed: {p.stderr.strip()}")
+            return
         self._log(f"$ scp {local} {host}:{remote}")
         p = subprocess.run(["scp", "-q", *SSH_OPTS, str(local), f"{host}:{remote}"], capture_output=True, text=True)
         if p.returncode != 0:
