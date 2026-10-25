@@ -303,9 +303,10 @@ def up_argv(region, alias, netfilter_mode):
     return argv
 
 
-STATUS_JSON = '"$TS_BIN" status --json\n'
-NETCHECK_JSON = '"$TS_BIN" netcheck --format=json\n'
-NODES_JSON = '"$BIN" nodes list -o json\n'
+# stderr is dropped: netcheck prints a format warning and log lines there, which would break the JSON.
+STATUS_JSON = '"$TS_BIN" status --json 2>/dev/null\n'
+NETCHECK_JSON = '"$TS_BIN" netcheck --format=json 2>/dev/null\n'
+NODES_JSON = '"$BIN" nodes list -o json 2>/dev/null\n'
 
 LOGOUT = r"""if [ -x "$TS_BIN" ] && systemctl is-active --quiet tailscaled; then
   "$TS_BIN" logout || true
@@ -321,8 +322,10 @@ def delete_node(node_id):
 
 
 def _json(text, what):
+    """Parse the JSON in a command's output, ignoring any lines printed before it."""
+    starts = [i for i in (text.find("{"), text.find("[")) if i >= 0]
     try:
-        return json.loads(text)
+        return json.JSONDecoder().raw_decode(text[min(starts):])[0] if starts else json.loads(text)
     except ValueError:
         raise StepError(f"could not read {what} as JSON") from None
 

@@ -227,6 +227,13 @@ class JoinApplyTest(TempDirTest):
         self.assertIn("preferred DERP region is 902, expected 901", msg)
         self.assertIn("exactly one node named cn-probe", msg)
 
+    def test_json_with_noise_before_it(self):
+        noisy = "# Warning: this JSON format is not yet considered a stable interface\n" + json.dumps({"PreferredDERP": 901})
+        self.assertEqual(join._json(noisy, "netcheck"), {"PreferredDERP": 901})
+        self.assertEqual(join._json("[]\n", "nodes"), [])
+        with self.assertRaises(StepError):
+            join._json("no json here", "netcheck")
+
     def test_needs_the_site_ca(self):
         runner = FakeRunner(responses())
         self.assertEqual(self.job(runner, ops=FakeOps(ca=None)).apply(yes=True), 1)
