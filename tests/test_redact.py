@@ -31,7 +31,7 @@ class RedactTest(TempDirTest):
 
     def test_hosts_only_in_host_settings(self):
         site = self.load_site(EXAMPLE_WITH_EXTRA_HOST, name="extra")
-        self.assertEqual(Redactor(site)("ssh far-edge"), "ssh <host3>")
+        self.assertRegex(Redactor(site)("ssh far-edge"), r"^ssh <host\d+>$")
 
     def test_generic_values(self):
         text = f"{OUTSIDE_IP} then {OTHER_IP} then {OUTSIDE_IP}; 100.64.0.1 and 127.0.0.1 and 0.0.0.0:3478 stay"

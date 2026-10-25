@@ -101,6 +101,8 @@ class HostSettings:
     name: str
     tailscale_port: int = None   # fixed UDP port for tailscaled (--port)
     netfilter_mode: str = None   # tailscale up --netfilter-mode
+    region: str = None           # needed only for hosts that are no region's control or checker host
+    tags: list = None            # default: see Site.host_tags
 
 
 @dataclass
@@ -133,6 +135,31 @@ class Site:
             if h not in seen:
                 seen.append(h)
         return seen
+
+    def host_region(self, alias):
+        """The region a host joins: [hosts.<alias>] region, else the region it controls or checks."""
+        h = self.host_settings.get(alias)
+        if h and h.region:
+            return self.regions[h.region]
+        found = [r for r in self.regions.values() if alias in (r.control_host, r.check_from)]
+        if len(found) == 1:
+            return found[0]
+        if not found:
+            raise SiteError(f"{alias}: not in any region; add [hosts.{alias}] region = \"<region>\" to site.toml")
+        raise SiteError(f"{alias}: in regions {', '.join(r.name for r in found)}; "
+                        f"choose one with [hosts.{alias}] region")
+
+    def host_tags(self, alias):
+        """[hosts.<alias>] tags, else the region's -server tag plus -gateway for a line
+        initiator and -border for a line responder."""
+        h = self.host_settings.get(alias)
+        if h and h.tags:
+            return list(h.tags)
+        region = self.host_region(alias)
+        suffixes = {"-server"}
+        suffixes |= {"-gateway" for ln in self.lines if ln.initiator == alias}
+        suffixes |= {"-border" for ln in self.lines if ln.responder == alias}
+        return [t for t in region.tags if any(t.endswith(s) for s in suffixes)]
 
     @property
     def pki_dir(self):
@@ -230,7 +257,7 @@ REGION_KEYS = {
     "tags": list,
 }
 REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int}
-HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str}
+HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str, "region": str, "tags": list}
 NETFILTER_MODES = ("on", "nodivert", "off")
 LINE_KEYS = {
     "name": str,
@@ -443,6 +470,17 @@ def parse(data, known_host=None, directory=None):
         mode = h.get("netfilter_mode")
         if mode is not None and mode not in NETFILTER_MODES:
             problems.append(f"{where}.netfilter_mode: use one of {', '.join(NETFILTER_MODES)}")
+        region_name = h.get("region")
+        if region_name is not None and region_name not in regions:
+            problems.append(f"{where}.region: no region {region_name!r}")
+        tags = h.get("tags")
+        if tags is not None:
+            home = regions.get(region_name) or next(
+                (r for r in regions.values() if alias in (r.control_host, r.check_from)), None)
+            allowed = home.tags if home else []
+            for tag in tags:
+                if not isinstance(tag, str) or tag not in allowed:
+                    problems.append(f"{where}.tags: {tag!r} is not a tag of the host's region")
         host_settings[alias] = HostSettings(name=alias, **h)
 
     if problems:

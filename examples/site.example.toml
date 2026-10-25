@@ -44,6 +44,11 @@ netfilter_mode = "off"             # tn init sets "off" where the resolvers sit 
 [hosts.ovs-control]
 tailscale_port = 41641             # fixed UDP port for tailscaled, where a provider passes only some ports
 
+[hosts.cn-gateway]
+region = "cn"                      # needed for hosts that neither control nor check a region
+                                   # tags default to the region's -server tag, plus -gateway for a
+                                   # line initiator and -border for a line responder
+
 [[lines]]                          # optional dedicated links between regions
 name = "line1"
 initiator = "cn-gateway"           # the only side allowed to start connections

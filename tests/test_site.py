@@ -51,7 +51,8 @@ class SiteFileTest(TempDirTest):
         self.assertIn("lines.line1.initiator: 'cn-gateway' is neither a region host nor an SSH alias", msg)
         # A line between region hosts needs no SSH lookup.
         text = example_text(('initiator = "cn-gateway"', 'initiator = "cn-control"'),
-                            ('responder = "ovs-line"', 'responder = "ovs-control"'))
+                            ('responder = "ovs-line"', 'responder = "ovs-control"'),
+                            ("[hosts.cn-gateway]", "[hosts.cn-probe]"))
         site = sitemod.load(self.make_site_dir(text, name="b"), known_host=lambda alias: False)
         self.assertEqual(site.lines[0].responder, "ovs-control")
 

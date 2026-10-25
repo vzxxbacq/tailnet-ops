@@ -26,6 +26,10 @@
 | `./tn control apply <region>` | 按计划部署 Headscale，要输入 `yes` |
 | `./tn control verify <region>` | 从检查机只读验证 TLS `/health`、DERP、STUN |
 | `./tn control rollback <region>` | 倒序回滚，只删 tailnet-ops 自己做的东西，要输入 `yes` |
+| `./tn join plan <host>` | 打印入网的每一步、远程脚本和回滚，不改任何东西 |
+| `./tn join apply <host>` | 装 Tailscale、信任站点 CA、用一次性带标签密钥加入本区，要输入 `yes` |
+| `./tn join verify <host>` | 只读检查：已连上、地址在本区网段、标签正确、用本区 DERP |
+| `./tn join rollback <host>` | 退出 tailnet 并删掉入网时加的东西，要输入 `yes` |
 | `./tn status <region>` | 列出节点 |
 | `make check` | 离线测试，加上对工作区和全部历史的隐私检查 |
 

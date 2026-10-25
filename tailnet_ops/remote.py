@@ -46,6 +46,12 @@ def remote_command(args=(), privileged=False):
     return f'if [ "$(id -u)" = 0 ]; then exec {argv}; else exec sudo -n {argv}; fi'
 
 
+def privileged_command(argv):
+    """A remote command line that runs argv as root (directly, or through sudo -n)."""
+    line = " ".join(shlex.quote(a) for a in argv)
+    return f'if [ "$(id -u)" = 0 ]; then exec {line}; else exec sudo -n {line}; fi'
+
+
 class SSHRunner:
     def __init__(self, out=print, log=None):
         self.out = out
@@ -77,6 +83,33 @@ class SSHRunner:
         if check and rc != 0:
             raise RemoteError(f"script on {host} exited with {rc}")
         return result
+
+    def pipe(self, src_host, src_script, dst_host, dst_argv):
+        """Run src_script (as root) on src_host and feed its stdout into dst_argv (as root) on
+        dst_host. The bytes go from one ssh process straight to the other: this process never
+        reads, prints or logs them. Used for pre-auth keys."""
+        self._log(f"$ ssh {src_host} (root) | ssh {dst_host} (root) {' '.join(dst_argv)}\n{src_script}")
+        src = subprocess.Popen(["ssh", *SSH_OPTS, src_host, remote_command((), True)],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        dst = subprocess.Popen(["ssh", *SSH_OPTS, dst_host, privileged_command(dst_argv)],
+                               stdin=src.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        src.stdout.close()
+        src.stdin.write(src_script.encode())
+        src.stdin.close()
+        for line in dst.stdout:
+            line = line.rstrip("\n")
+            self._log(line)
+            self.out(f"    {line}")
+        dst_rc = dst.wait()
+        src_err = src.stderr.read().decode(errors="replace").strip()
+        src_rc = src.wait()
+        if src_err:
+            self._log(src_err)
+            self.out("    " + src_err.replace("\n", "\n    "))
+        if src_rc != 0:
+            raise RemoteError(f"script on {src_host} exited with {src_rc}")
+        if dst_rc != 0:
+            raise RemoteError(f"command on {dst_host} exited with {dst_rc}")
 
     def upload(self, host, local, remote):
         self._log(f"$ scp {local} {host}:{remote}")

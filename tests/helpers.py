@@ -70,6 +70,11 @@ class FakeRunner:
     def upload(self, host, local, remote):
         self.calls.append(("upload", host, str(local), remote))
 
+    def pipe(self, src_host, src_script, dst_host, dst_argv):
+        self.calls.append(("pipe", src_host, src_script, dst_host, tuple(dst_argv)))
+        if self.fail_on and self.fail_on in src_script:
+            raise RemoteError(f"script on {src_host} exited with 1")
+
     def scripts_for(self, host):
         return [c[2] for c in self.calls if c[0] == "run" and c[1] == host]
 

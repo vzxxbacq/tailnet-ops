@@ -7,6 +7,8 @@ from pathlib import Path
 
 from . import VERSION, init, remote, site as sitemod
 from .control import Deployment
+from .join import Join
+from .procedure import StepError
 from .redact import Redactor, identity
 
 EPILOG = """Site directory: --site DIR, else $TN_SITE, else ~/.config/tailnet-ops.
@@ -101,6 +103,30 @@ def cmd_control(args):
             return dep.verify()
         if args.action == "preflight":
             return dep.preflight()
+    finally:
+        console.close()
+    return 2
+
+
+def cmd_join(args):
+    site = load_site(args)
+    console = Console(Redactor(site) if args.redact else identity, run_log(site, f"join-{args.action}", args.host))
+    runner = remote.SSHRunner(out=console.out, log=console.log)
+    try:
+        job = Join(site, args.host, runner=runner, out=console.out)
+        if args.action == "plan":
+            text, _digest = job.plan_text()
+            console.out(text)
+            console.out(f"Saved to {console.log_path}. Nothing was changed.")
+            return 0
+        if args.action == "apply":
+            return job.apply(yes=args.yes)
+        if args.action == "rollback":
+            return job.rollback(yes=args.yes)
+        if args.action == "verify":
+            return job.verify()
+        if args.action == "preflight":
+            return job.preflight()
     finally:
         console.close()
     return 2
@@ -223,6 +249,21 @@ def build_parser():
             c.add_argument("--yes", action="store_true", help="do not ask")
         c.set_defaults(func=cmd_control)
 
+    p = sub.add_parser("join", help="add a host to its region's tailnet")
+    s = p.add_subparsers(dest="action", required=True)
+    for action, help_text in (
+        ("plan", "print every step with its exact remote script and rollback; changes nothing"),
+        ("preflight", "run step 1 only (read-only)"),
+        ("apply", "install Tailscale and join; asks for yes"),
+        ("verify", "check the host is in its tailnet with the right tags (read-only)"),
+        ("rollback", "leave the tailnet and remove what join added; asks for yes"),
+    ):
+        c = s.add_parser(action, parents=[common], help=help_text)
+        c.add_argument("host", help="SSH alias")
+        if action in ("apply", "rollback"):
+            c.add_argument("--yes", action="store_true", help="do not ask")
+        c.set_defaults(func=cmd_join)
+
     p = sub.add_parser("status", parents=[common], help="list the nodes of a region (read-only)")
     p.add_argument("region")
     p.set_defaults(func=cmd_status)
@@ -239,6 +280,9 @@ def main(argv=None):
         print("site problem:", file=sys.stderr)
         for p in e.problems:
             print(f"  {p}", file=sys.stderr)
+        return 1
+    except StepError as e:
+        print(f"tn: {e}", file=sys.stderr)
         return 1
     except (ValueError, KeyboardInterrupt) as e:
         print(f"tn: {e or 'interrupted'}", file=sys.stderr)
