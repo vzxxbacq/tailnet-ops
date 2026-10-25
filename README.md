@@ -27,8 +27,8 @@
 | `./tn control verify <region>` | 从检查机只读验证 TLS `/health`、DERP、STUN |
 | `./tn control rollback <region>` | 倒序回滚，只删 tailnet-ops 自己做的东西，要输入 `yes` |
 | `./tn join plan <host>` | 先只读检查：分到哪个地区、能否连上控制面、端口和已有 Tailscale；再列出步骤和撤销方法。`--offline` 跳过检查，`--full` 看完整脚本 |
-| `./tn join apply <host>` | 装 Tailscale、信任站点 CA、用一次性带标签密钥加入本区，要输入 `yes` |
-| `./tn join verify <host>` | 只读检查：已连上、地址在本区网段、标签正确、用本区 DERP |
+| `./tn join apply <host>` | 装 Tailscale、信任站点 CA、用一次性密钥入网，要输入 `yes`。服务器用带标签的密钥加入本区；个人设备以你的身份加入每个区，一个区一个账号（profile） |
+| `./tn join verify <host>` | 只读检查：已连上、地址在本区网段、标签正确（个人设备没有标签、每个区都有账号）、用本区 DERP |
 | `./tn join rollback <host>` | 退出 tailnet 并删掉入网时加的东西，要输入 `yes` |
 | `./tn line list` | 列出站点里的所有专线：两端、入口、隧道地址、优先级（只读 `site.toml`） |
 | `./tn line plan <line>` | 只读检查专线两端和它们的防火墙，列出会挡住转发的链、步骤和撤销方法 |
@@ -39,6 +39,15 @@
 | `./tn dns sync` | 把各区看得到的对方机器名字写进各自的 Headscale，要输入 `yes`；入网和拉专线时会自动做 |
 | `./tn status <region>` | 列出节点 |
 | `make check` | 离线测试，加上对工作区和全部历史的隐私检查 |
+
+入网的机器在 `[hosts.<名字>]` 里设置：
+
+| 设置 | 含义 |
+| --- | --- |
+| `role = "server"`（默认） | 服务器：固定在 `region` 那个区，带区里的服务器标签 |
+| `role = "personal"` | 个人设备：用 `owner_user` 的身份加入每个区，从 `region` 开始；换地方时用 `sudo tailscale switch <区名>` 切换 |
+| `os = "macos"` | Mac：用 Homebrew 的 tailscale，由 launchd 运行，站点 CA 加进系统钥匙串（macOS 会弹窗要密码或 Touch ID）。默认 Linux |
+| `local = true` | 就是运行 tn 的这台机器：脚本在本机用 sudo 执行，不走 SSH |
 
 站点目录默认 `~/.config/tailnet-ops/`，也可用 `--site DIR` 或 `TN_SITE`。加 `--redact` 后，输出里的地址、主机名和密钥会换成固定占位符，方便分享。
 

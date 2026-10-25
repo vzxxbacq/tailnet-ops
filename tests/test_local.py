@@ -2,7 +2,7 @@ from tailnet_ops import remote
 from tailnet_ops import site as sitemod
 from tests.helpers import TempDirTest, example_text
 
-LOCAL = ("[[lines]]", "[hosts.vault]\nregion = \"cn\"\nlocal = true\n\n[[lines]]")
+LOCAL = ("[hosts.laptop]", "[hosts.vault]")   # the example's machine that runs tn
 
 
 class LocalHostTest(TempDirTest):

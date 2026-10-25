@@ -51,6 +51,12 @@ region = "cn"                      # needed for hosts that neither control nor c
 [hosts.ovs-line]
 region = "ovs"
 
+[hosts.laptop]                     # the machine that runs tn, if it joins too
+region = "cn"                      # a personal device starts here
+local = true                       # its scripts run here with sudo, not over SSH
+os = "macos"                       # "linux" (default) or "macos": Homebrew's tailscale under launchd
+role = "personal"                  # "server" (default) or "personal": the owner's device, in every region
+
 [[lines]]                          # optional dedicated links between regions
 name = "line1"
 initiator = "cn-gateway"           # the only side allowed to start connections

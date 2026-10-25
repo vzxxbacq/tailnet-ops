@@ -151,6 +151,8 @@ class HostSettings:
     region: str = None           # needed only for hosts that are no region's control or checker host
     accept_dns: bool = None      # default: on where systemd-resolved runs (only <suffix> goes to MagicDNS)
     local: bool = None           # the machine that runs tn: its scripts run here with sudo, not over SSH
+    os: str = None               # "linux" (default) or "macos"
+    role: str = None             # "server" (default): one region, tagged; "personal": the owner's device in every region
     tags: list = None            # default: see Site.host_tags
 
 
@@ -202,10 +204,16 @@ class Site:
     def is_line_end(self, alias):
         return any(alias in (ln.initiator, ln.responder) for ln in self.lines)
 
+    def is_personal(self, alias):
+        h = self.host_settings.get(alias)
+        return bool(h and h.role == "personal")
+
     def host_tags(self, alias):
         """[hosts.<alias>] tags, else the region's -server tag plus -gateway for a line
-        initiator and -border for a line responder."""
+        initiator and -border for a line responder. A personal device has none: the owner owns it."""
         h = self.host_settings.get(alias)
+        if self.is_personal(alias):
+            return []
         if h and h.tags:
             return list(h.tags)
         region = self.host_region(alias)
@@ -311,7 +319,9 @@ REGION_KEYS = {
 }
 REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int, "alias_ipv4": str, "base_domain": str}
 HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str, "region": str, "tags": list, "accept_dns": bool,
-             "local": bool}
+             "local": bool, "os": str, "role": str}
+ROLES = ("server", "personal")
+OSES = ("linux", "macos")
 NETFILTER_MODES = ("on", "nodivert", "off")
 LINE_OPTIONAL = {"port": int, "tunnel_ipv4": str}
 LINE_KEYS = {
@@ -541,6 +551,21 @@ def parse(data, known_host=None, directory=None):
         mode = h.get("netfilter_mode")
         if mode is not None and mode not in NETFILTER_MODES:
             problems.append(f"{where}.netfilter_mode: use one of {', '.join(NETFILTER_MODES)}")
+        os_name = h.get("os")
+        if os_name is not None and os_name not in OSES:
+            problems.append(f"{where}.os: use one of {', '.join(OSES)}")
+        if os_name == "macos" and mode is not None:
+            problems.append(f"{where}.netfilter_mode: Linux only")
+        role = h.get("role")
+        if role is not None and role not in ROLES:
+            problems.append(f"{where}.role: use one of {', '.join(ROLES)}")
+        if role == "personal":
+            if alias in named:
+                problems.append(f"{where}: a personal device cannot be a control host, a checker or a line's end")
+            if h.get("tags") is not None:
+                problems.append(f"{where}.tags: a personal device has no tags; the owner owns it")
+            if h.get("region") is None:
+                problems.append(f"{where}.region: set the region a personal device starts on")
         region_name = h.get("region")
         if region_name is not None and region_name not in regions:
             problems.append(f"{where}.region: no region {region_name!r}")

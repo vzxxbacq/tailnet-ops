@@ -52,6 +52,7 @@ ANSWERS = [
     "",                                             # no more regions
     "l1", "cn-edge", "ovs-edge", "203.0.113.30", "", "11011",  # line 1: one-way by default, tunnel port
     "",                                             # no more lines
+    "n",                                            # this machine does not join
 ]
 
 EXPECTED = {

@@ -26,6 +26,15 @@ def _vars(pairs):
     return "\n".join(f"{k}={shlex.quote(str(v))}" for k, v in pairs)
 
 
+def ca_function(ca_pem):
+    """`ca`: a shell function that prints the site CA, for `--cacert <(ca)` and comparisons."""
+    return f"""ca() {{
+cat <<'TN_PEM'
+{ca_pem.strip()}
+TN_PEM
+}}"""
+
+
 def control_prelude(site, region):
     r = region
     host = site.host_settings.get(r.control_host)
