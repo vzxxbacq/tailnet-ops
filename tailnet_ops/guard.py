@@ -38,6 +38,8 @@ def site_host_names(site_dir, lookup=None):
     for ln in data.get("lines") or []:
         if isinstance(ln, dict):
             names += [ln.get("initiator"), ln.get("responder"), ln.get("name")]
+    if isinstance(data.get("hosts"), dict):
+        names += list(data["hosts"])
     names = [n for n in names if isinstance(n, str) and n]
     for alias in list(names):
         hostname = lookup(alias).get("hostname", "")

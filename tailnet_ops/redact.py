@@ -33,6 +33,8 @@ class Redactor:
             self.names.setdefault(line.name, f"<line{i}>")
             self.ips.setdefault(line.responder_entry_ipv4, f"<line{i}-entry-ip>")
             self.ips.setdefault(line.initiator_public_ipv4, f"<line{i}-initiator-ip>")
+        for i, alias in enumerate(site.host_settings, 1):
+            self.names.setdefault(alias, f"<host{i}>")
         self.ips = {
             ip: p for ip, p in self.ips.items()
             if (a := privacy.parse_ipv4(ip)) is not None and not (a.is_unspecified or a.is_loopback)

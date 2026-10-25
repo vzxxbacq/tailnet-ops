@@ -32,6 +32,7 @@ class CliTest(TempDirTest):
         rc, out, err = run_cli("site", "check", "--site", str(self.site))
         self.assertEqual(rc, 0, err)
         self.assertIn("region cn: cn-control -> https://198.51.100.10:9443", out)
+        self.assertIn("host ovs-control: tailscale_port 41641/udp", out)
         rc, out, _ = run_cli("--redact", "site", "check", "--site", str(self.site))
         self.assertIn("region cn: <cn-control> -> https://<cn-public-ip>:9443", out)
 

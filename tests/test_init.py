@@ -47,8 +47,8 @@ PROBE = "uid=1000\nroot=sudo\nos=Ubuntu 24.04 LTS\narch=x86_64\nsystemd=yes\ntoo
 
 ANSWERS = [
     "example", "",                                  # site name, owner user (default)
-    "cn", "cn-edge", "cn-probe", "n",               # region 1
-    "ovs", "ovs-edge", "ovs-probe", "y",            # region 2
+    "cn", "cn-edge", "cn-probe", "n", "",           # region 1; any port can be opened
+    "ovs", "ovs-edge", "ovs-probe", "y", "20000-20002",  # region 2; the provider passes three ports
     "",                                             # no more regions
     "l1", "cn-edge", "ovs-edge", "203.0.113.30", "",  # line 1, one-way by default
     "",                                             # no more lines
@@ -66,11 +66,15 @@ EXPECTED = {
         },
         "ovs": {
             "control_host": "ovs-edge", "check_from": "ovs-probe",
-            "public_ipv4": "203.0.113.20", "listen_ipv4": "203.0.113.20", "port": 9443, "stun_port": 3478,
+            "public_ipv4": "203.0.113.20", "listen_ipv4": "203.0.113.20", "port": 20000, "stun_port": 20001,
             "ipv4_prefix": "100.65.0.0/16", "avoid_prefixes": [],
             "base_domain": "ovs.tailnet.internal", "derp_region_id": 902, "derp_region_code": "ovs",
             "derp_region_name": "OVS ovs-edge", "official_derp": True, "tags": ["tag:ovs-server", "tag:ovs-border"],
         },
+    },
+    "hosts": {
+        "cn-edge": {"netfilter_mode": "off"},
+        "ovs-edge": {"tailscale_port": 20002},
     },
     "lines": [{
         "name": "l1", "initiator": "cn-edge", "responder": "ovs-edge", "responder_entry_ipv4": "203.0.113.30",
@@ -114,6 +118,18 @@ class InitTest(unittest.TestCase):
         self.assertEqual(a["lines"][0]["one_way"], True)
         self.assertEqual(init.hosts_in(a), ["cn-edge", "cn-probe", "ovs-edge", "ovs-probe"])
 
+    def test_allowed_ports(self):
+        self.assertEqual(init.parse_ports("20000-20002"), [20000, 20001, 20002])
+        self.assertEqual(init.parse_ports(" 9443, 3478 ,"), [9443, 3478])
+        self.assertEqual(init.parse_ports(""), [])
+        self.assertIsNone(init._check_ports(""))
+        self.assertIsNone(init._check_ports("9443,3478"))
+        for bad in ("9443", "a-b", "0-2", "65535-65536"):
+            self.assertIsNotNone(init._check_ports(bad), bad)
+        busy = init.parse_facts("listen=udp 0.0.0.0:20001\n")
+        self.assertEqual(init._pick_ports(busy, [20000, 20001, 20002, 20003]), [20000, 20002, 20003])
+        self.assertEqual(init._pick_ports(busy, [20000, 20001]), [20000, None, None])
+
     def test_bad_answer_is_asked_again(self):
         seen = []
         asker = init.Asker(scripted(["Not A Region", "eu"]), out=seen.append)
@@ -124,7 +140,7 @@ class InitTest(unittest.TestCase):
         data, notes, _comments = init.derive(self.answers(), facts(), HOSTNAMES)
         self.assertEqual(data, EXPECTED)
         joined = "\n".join(notes)
-        self.assertIn("netfilter_mode = off", joined)
+        self.assertIn('[hosts.cn-edge] gets netfilter_mode = "off"', joined)
         self.assertIn("ovs-probe: python3 is missing", "\n".join(notes + init.checker_problems(
             "ovs-probe", init.parse_facts(PROBE.replace("tool=python3\n", "")))))
         sitemod.parse(data, known_host=lambda h: False)
@@ -145,6 +161,8 @@ class InitTest(unittest.TestCase):
         self.assertEqual(tomllib.loads(text), data)
         self.assertIn("# from ssh -G cn-edge", text)
         self.assertIn("[[lines]]", text)
+        self.assertIn("[hosts.cn-edge]", text)
+        self.assertIn("tailscale_port = 20002  # UDP for tailscaled --port", text)
 
     def test_differences(self):
         self.assertEqual(init.differences(EXPECTED, EXPECTED), [])

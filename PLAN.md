@@ -37,6 +37,7 @@ The first site is the owner's. Its configuration and notes are in the owner's si
 
 - `[site]`;
 - one `[regions.<name>]` per tailnet;
+- optional `[hosts.<alias>]` with `tailscale_port` (a fixed UDP port for tailscaled) and `netfilter_mode`, used when a host joins;
 - optional `[[lines]]`, each with `initiator`, `responder`, `responder_entry_ipv4` and `one_way`.
 
 **Ask only what SSH cannot tell.** The tool derives the following over SSH and never asks for it:
@@ -51,7 +52,7 @@ The first site is the owner's. Its configuration and notes are in the owner's si
 
 | Command | Milestone | What it does |
 | --- | --- | --- |
-| `tn init` | 1 | Asks for the site name, regions (name, control host, checker host) and lines (initiator, responder, entry address, one-way or not). Derives the rest over SSH, shows a summary and writes `site.toml`. |
+| `tn init` | 1 | Asks for the site name, regions (name, control host, checker host), lines (initiator, responder, entry address, one-way or not) and, per region, the ports a provider lets in to the control host (taken in order for HTTPS, STUN and Tailscale). Derives the rest over SSH, shows a summary and writes `site.toml`. |
 | `tn site check` | 1 | Validates `site.toml`. Each prefix must sit inside 100.64.0.0/10, avoid its `avoid_prefixes` and not overlap another region. Region ids must be distinct, and every line must name existing hosts. |
 | `tn control plan/apply/verify/rollback <region>` | 1 | Deploys Headscale for a region (steps below). |
 | `tn status <region>` | 1 | Runs `headscale nodes list -o json` on the control host. |

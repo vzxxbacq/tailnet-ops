@@ -6,9 +6,9 @@ from tests.helpers import TempDirTest, any_host, example_text
 
 
 class SiteFileTest(TempDirTest):
-    def problems(self, text, known_host=any_host):
+    def problems(self, text, known_host=any_host, name="site"):
         with self.assertRaises(sitemod.SiteError) as cm:
-            sitemod.load(self.make_site_dir(text), known_host=known_host)
+            sitemod.load(self.make_site_dir(text, name), known_host=known_host)
         return "\n".join(cm.exception.problems)
 
     def test_example_is_valid(self):
@@ -23,6 +23,8 @@ class SiteFileTest(TempDirTest):
         self.assertEqual(cn.metrics_port, 9090)
         self.assertEqual(cn.grpc_port, 50443)
         self.assertEqual(site.lines[0].initiator, "cn-gateway")
+        self.assertEqual(site.host_settings["cn-control"].netfilter_mode, "off")
+        self.assertEqual(site.host_settings["ovs-control"].tailscale_port, 41641)
 
     def test_prefix_must_sit_inside_cgnat(self):
         text = example_text(('ipv4_prefix = "100.64.0.0/16"', 'ipv4_prefix = "192.0.2.0/24"'))
@@ -66,6 +68,17 @@ class SiteFileTest(TempDirTest):
 
     def test_bad_toml(self):
         self.assertIn("site.toml", self.problems("[site\n"))
+
+    def test_host_settings(self):
+        text = example_text(('netfilter_mode = "off"', 'netfilter_mode = "nope"\nport = 1'),
+                            ("tailscale_port = 41641", "tailscale_port = 3478"))
+        msg = self.problems(text)
+        self.assertIn("hosts.cn-control.netfilter_mode: use one of on, nodivert, off", msg)
+        self.assertIn("hosts.cn-control: unknown key port", msg)
+        self.assertIn("hosts.ovs-control.tailscale_port: 3478 is region ovs's STUN port on this host", msg)
+        text = example_text(("[hosts.ovs-control]", "[hosts.elsewhere]"))
+        self.assertIn("'elsewhere' is neither a site host nor an SSH alias",
+                      self.problems(text, known_host=lambda alias: alias != "elsewhere", name="b"))
 
     def test_optional_ports(self):
         text = example_text(("stun_port = 3478", "stun_port = 3478\nmetrics_port = 9443"))

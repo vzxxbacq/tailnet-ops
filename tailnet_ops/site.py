@@ -95,11 +95,21 @@ class Line:
 
 
 @dataclass
+class HostSettings:
+    """Optional per-host settings, used when the host joins its tailnet."""
+
+    name: str
+    tailscale_port: int = None   # fixed UDP port for tailscaled (--port)
+    netfilter_mode: str = None   # tailscale up --netfilter-mode
+
+
+@dataclass
 class Site:
     name: str
     owner_user: str
     regions: dict
     lines: list = field(default_factory=list)
+    host_settings: dict = field(default_factory=dict)
     directory: Path = None
 
     def region(self, name):
@@ -119,6 +129,9 @@ class Site:
             for h in (line.initiator, line.responder):
                 if h not in seen:
                     seen.append(h)
+        for h in self.host_settings:
+            if h not in seen:
+                seen.append(h)
         return seen
 
     @property
@@ -217,6 +230,8 @@ REGION_KEYS = {
     "tags": list,
 }
 REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int}
+HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str}
+NETFILTER_MODES = ("on", "nodivert", "off")
 LINE_KEYS = {
     "name": str,
     "initiator": str,
@@ -277,7 +292,7 @@ def parse(data, known_host=None, directory=None):
     """
     problems = []
     for key in data:
-        if key not in ("site", "regions", "lines"):
+        if key not in ("site", "regions", "hosts", "lines"):
             problems.append(f"unknown table [{key}]")
 
     site_table = data.get("site")
@@ -405,9 +420,35 @@ def parse(data, known_host=None, directory=None):
             problems.append(f"{where}.keepalive_seconds: use 1-3600")
         lines.append(Line(**ln))
 
+    named = site_hosts | {h for ln in lines for h in (ln.initiator, ln.responder)}
+    host_settings = {}
+    raw_hosts = data.get("hosts", {})
+    if not isinstance(raw_hosts, dict):
+        problems.append("hosts: use [hosts.<alias>] tables")
+        raw_hosts = {}
+    for alias, table in raw_hosts.items():
+        where = f"hosts.{alias}"
+        if not isinstance(table, dict):
+            problems.append(f"{where}: not a table")
+            continue
+        h = _typed(where, table, {}, HOST_KEYS, problems)
+        if alias not in named and (not HOST_RE.match(alias) or known_host is None or not known_host(alias)):
+            problems.append(f"{where}: {alias!r} is neither a site host nor an SSH alias")
+        port = h.get("tailscale_port")
+        if port is not None:
+            _port(f"{where}.tailscale_port", port, problems)
+            for r in regions.values():
+                if r.control_host == alias and r.stun_port == port:
+                    problems.append(f"{where}.tailscale_port: {port} is region {r.name}'s STUN port on this host (both UDP)")
+        mode = h.get("netfilter_mode")
+        if mode is not None and mode not in NETFILTER_MODES:
+            problems.append(f"{where}.netfilter_mode: use one of {', '.join(NETFILTER_MODES)}")
+        host_settings[alias] = HostSettings(name=alias, **h)
+
     if problems:
         raise SiteError(problems)
-    return Site(name=s["name"], owner_user=s["owner_user"], regions=regions, lines=lines, directory=directory)
+    return Site(name=s["name"], owner_user=s["owner_user"], regions=regions, lines=lines,
+                host_settings=host_settings, directory=directory)
 
 
 def read_toml(path):

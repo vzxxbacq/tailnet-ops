@@ -19,7 +19,7 @@
 
 | 命令 | 作用 |
 | --- | --- |
-| `./tn init` | 只问名字和专线入口地址，其余通过只读 SSH 得出，写 `site.toml` |
+| `./tn init` | 只问名字、专线入口地址和服务商放行的端口，其余通过只读 SSH 得出，写 `site.toml` |
 | `./tn site check` | 校验站点目录（权限、不在 Git 里）和 `site.toml` |
 | `./tn control plan <region>` | 打印每一步、确切的远程脚本和回滚，不改任何东西 |
 | `./tn control preflight <region>` | 只读预检：系统、端口、已有文件 |

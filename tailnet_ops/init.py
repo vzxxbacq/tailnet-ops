@@ -172,6 +172,10 @@ def ask_answers(asker):
             "control_host": asker.ask(f"  {name}: control host (SSH alias)", None, _check_alias),
             "check_from": asker.ask(f"  {name}: checker host in the same region (SSH alias)", None, _check_alias),
             "official_derp": asker.yes_no(f"  {name}: also use Tailscale's official DERP relays as a fallback?", False),
+            "ports": parse_ports(asker.ask(
+                f"  {name}: ports the provider lets in to the control host, used in order for HTTPS, STUN and "
+                "Tailscale (e.g. 20000-20002; empty if any port can be opened)",
+                None, _check_ports, allow_empty=True)),
         })
     while True:
         n = len(a["lines"]) + 1
@@ -187,6 +191,37 @@ def ask_answers(asker):
             "one_way": asker.yes_no(f"  {name}: one-way (only the initiator may start connections)?", True),
         })
     return a
+
+
+def parse_ports(text):
+    """'20000-20002' or '9443, 3478' -> a list of ports, in the given order."""
+    out = []
+    for item in filter(None, (part.strip() for part in text.split(","))):
+        low, _, high = item.partition("-")
+        for port in range(int(low), int(high or low) + 1):
+            if port not in out:
+                out.append(port)
+    return out
+
+
+def _check_ports(text):
+    try:
+        ports = parse_ports(text)
+    except ValueError:
+        ports = None
+    if ports is None or not all(1 <= p <= 65535 for p in ports) or (text.strip() and len(ports) < 2):
+        return "list at least two ports, e.g. 20000-20002 or 9443,3478"
+    return None
+
+
+def _pick_ports(facts, allowed):
+    """Take allowed ports in order for HTTPS (tcp), STUN (udp) and Tailscale (udp), skipping busy ones."""
+    pool, picks = list(allowed), []
+    for proto in ("tcp", "udp", "udp"):
+        while pool and facts.port_busy(proto, pool[0]):
+            pool.pop(0)
+        picks.append(pool.pop(0) if pool else None)
+    return picks
 
 
 def hosts_in(answers):
@@ -229,6 +264,7 @@ def derive(answers, facts, hostnames):
     notes, comments = [], {}
     data = {"site": {"name": answers["site"], "owner_user": answers["owner_user"]}, "regions": {}}
     used = []
+    host_ports = {}
     initiators = {ln["initiator"] for ln in answers["lines"]}
     responders = {ln["responder"] for ln in answers["lines"]}
     for i, ra in enumerate(answers["regions"]):
@@ -247,19 +283,32 @@ def derive(answers, facts, hostnames):
         else:
             listen = "0.0.0.0"
             comments[(table, "listen_ipv4")] = "the public address is not on an interface (1:1 NAT)"
-        port = _free_port(f, "tcp", pins.DEFAULT_PORT)
-        stun = _free_port(f, "udp", pins.DEFAULT_STUN_PORT)
+        allowed = ra.get("ports") or []
+        tailscale_port = None
+        if allowed:
+            port, stun, tailscale_port = _pick_ports(f, allowed)
+            if port is None or stun is None:
+                raise ValueError(f"{host}: the allowed ports leave none free for HTTPS and STUN")
+            comments[(table, "port")] = f"the provider lets in only {_describe_ports(allowed)}"
+            if tailscale_port is None:
+                notes.append(f"{host}: no third allowed port is free for Tailscale, so direct connections to it "
+                             "are less likely once it joins")
+        else:
+            port = _free_port(f, "tcp", pins.DEFAULT_PORT)
+            stun = _free_port(f, "udp", pins.DEFAULT_STUN_PORT)
+            for label, want, got in (("port", pins.DEFAULT_PORT, port), ("stun_port", pins.DEFAULT_STUN_PORT, stun)):
+                if want != got:
+                    comments[(table, label)] = f"{want} is in use on {host}"
         metrics = _free_port(f, "tcp", pins.DEFAULT_METRICS_PORT, taken=(port,))
         grpc = _free_port(f, "tcp", pins.DEFAULT_GRPC_PORT, taken=(port, metrics))
-        for label, want, got in (("port", pins.DEFAULT_PORT, port), ("stun_port", pins.DEFAULT_STUN_PORT, stun)):
-            if want != got:
-                comments[(table, label)] = f"{want} is in use on {host}"
+        if tailscale_port is not None:
+            host_ports[host] = tailscale_port
         cgnat = f.cgnat_resolvers()
         avoid = sorted({str(ipaddress.IPv4Network(f"{r}/16", strict=False)) for r in cgnat})
         if cgnat:
             comments[(table, "avoid_prefixes")] = f"resolvers inside 100.64.0.0/10: {', '.join(cgnat)}"
-            notes.append(f"{host}: its resolvers ({', '.join(cgnat)}) sit inside 100.64.0.0/10. "
-                         f"The prefix avoids {', '.join(avoid)}; when it joins (milestone 2) use netfilter_mode = off.")
+            notes.append(f"{host}: its resolvers ({', '.join(cgnat)}) sit inside 100.64.0.0/10. The prefix avoids "
+                         f"{', '.join(avoid)}, and [hosts.{host}] gets netfilter_mode = \"off\" for when it joins.")
         prefix = _allocate_prefix(avoid, used)
         used.append(prefix)
         tags = [f"tag:{name}-server"]
@@ -319,9 +368,26 @@ def derive(answers, facts, hostnames):
             "keepalive_seconds": 25,
             "priority": 10 * i,
         })
+    hosts = {}
+    for alias in hosts_in(answers):
+        f = facts.get(alias)
+        if f is not None and f.cgnat_resolvers():
+            hosts.setdefault(alias, {})["netfilter_mode"] = "off"
+            comments[(f"hosts.{alias}", "netfilter_mode")] = "its resolvers sit inside 100.64.0.0/10"
+    for alias, port in host_ports.items():
+        hosts.setdefault(alias, {})["tailscale_port"] = port
+        comments[(f"hosts.{alias}", "tailscale_port")] = "UDP for tailscaled --port, the next allowed port"
+    if hosts:
+        data["hosts"] = hosts
     if lines:
         data["lines"] = lines
     return data, notes, comments
+
+
+def _describe_ports(ports):
+    if ports == list(range(ports[0], ports[-1] + 1)) and len(ports) > 2:
+        return f"{ports[0]}-{ports[-1]}"
+    return ", ".join(str(p) for p in ports)
 
 
 def control_host_problems(host, f):
@@ -374,9 +440,9 @@ def to_toml(data, comments=None, today=None):
         "",
     ]
 
-    def table(name, values):
+    def table(name, values, key_table=None):
         out.append(f"[{name}]" if not name.startswith("[[") else name)
-        key_table = name.strip("[]")
+        key_table = key_table or name.strip("[]")
         if name.startswith("[["):
             key_table = f"lines.{values['name']}"
         width = max(len(k) for k in values)
@@ -389,6 +455,9 @@ def to_toml(data, comments=None, today=None):
     table("site", data["site"])
     for name, r in data["regions"].items():
         table(f"regions.{name}", r)
+    for alias, h in data.get("hosts", {}).items():
+        key = alias if re.match(r"^[A-Za-z0-9_-]+$", alias) else json.dumps(alias)
+        table(f"hosts.{key}", h, key_table=f"hosts.{alias}")
     for ln in data.get("lines", []):
         table("[[lines]]", ln)
     return "\n".join(out)

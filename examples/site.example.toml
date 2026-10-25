@@ -38,6 +38,12 @@ derp_region_name = "OVS control"
 official_derp = true
 tags = ["tag:ovs-server", "tag:ovs-border"]
 
+[hosts.cn-control]                 # optional per-host settings, used when the host joins its tailnet
+netfilter_mode = "off"             # tn init sets "off" where the resolvers sit inside 100.64.0.0/10
+
+[hosts.ovs-control]
+tailscale_port = 41641             # fixed UDP port for tailscaled, where a provider passes only some ports
+
 [[lines]]                          # optional dedicated links between regions
 name = "line1"
 initiator = "cn-gateway"           # the only side allowed to start connections

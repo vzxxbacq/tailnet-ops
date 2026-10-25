@@ -71,6 +71,10 @@ def cmd_site_check(args):
     for ln in site.lines:
         print(redact(f"  line {ln.name}: {ln.initiator} -> {ln.responder} ({ln.responder_entry_ipv4})"
                      f"{', one-way' if ln.one_way else ''}"))
+    for h in site.host_settings.values():
+        parts = [f"tailscale_port {h.tailscale_port}/udp" if h.tailscale_port else "",
+                 f"netfilter_mode {h.netfilter_mode}" if h.netfilter_mode else ""]
+        print(redact(f"  host {h.name}: {', '.join(p for p in parts if p) or 'no settings'}"))
     return 0
 
 
