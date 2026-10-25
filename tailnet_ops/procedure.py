@@ -204,8 +204,12 @@ class Procedure:
             except self.errors as e:
                 self.out(f"\nFAILED: {e}. Later rollback steps did not run.")
                 return 1
+        self.after_rollback()
         self.out("\n" + self.rolled_back_message())
         return 0
+
+    def after_rollback(self):
+        """A read-only check after a rollback; subclasses report what is left."""
 
     def run_once(self, fn):
         """Run one read-only piece (preflight, verify, status); report failure as rc 1."""

@@ -1,7 +1,9 @@
 """`tn join`: add a host to its region's tailnet with a pinned static Tailscale build."""
 
+import datetime
 import ipaddress
 import json
+import time
 import re
 import shlex
 import tarfile
@@ -181,7 +183,22 @@ ROLLBACK_BINARIES = r"""for p in "$TS_BIN" "$TSD_BIN"; do
   elif ours_bin "$p"; then rm -f "$p"; echo "removed $p"
   else echo "skip: $p is not the pinned build"; fi
 done
+for d in /tmp/tn-tailscale.*; do
+  if [ -d "$d" ]; then rm -rf "$d"; echo "removed the staging directory $d"; fi
+done
 """
+
+# Read-only: everything join can leave on a host, one `TN-LEFT` line per item still there.
+LEFTOVERS = r"""for p in "$TS_BIN" "$TSD_BIN" "$TS_UNIT" "$TS_STATE" "$TS_CACHE" "$CA_FILE" /run/tailscale \
+         /etc/systemd/system/multi-user.target.wants/tailscaled.service /tmp/tn-tailscale.*; do
+  if [ -e "$p" ]; then echo "TN-LEFT $p"; fi
+done
+if ip link show tailscale0 >/dev/null 2>&1; then echo "TN-LEFT interface tailscale0"; fi
+if pgrep -x tailscaled >/dev/null; then echo "TN-LEFT a running tailscaled"; fi
+if ip rule show 2>/dev/null | grep -q 'lookup 52'; then echo "TN-LEFT ip rules for table 52"; fi
+"""
+
+PREAUTH_KEYS_JSON = '"$BIN" preauthkeys list -o json 2>/dev/null\n'
 
 
 # --- step 3: site CA in the system trust store ---------------------------------------
@@ -319,6 +336,22 @@ fi
 
 def delete_node(node_id):
     return f'"$BIN" nodes delete -i {int(node_id)} --force\n'
+
+
+def delete_preauth_key(key_id):
+    return f'"$BIN" preauthkeys delete -i {int(key_id)}\n'
+
+
+def _expired(key):
+    stamp = key.get("expiration")
+    if not stamp:
+        return False
+    if isinstance(stamp, dict):  # protobuf timestamp as {"seconds": ...}
+        return int(stamp.get("seconds", 0)) < time.time()
+    try:
+        return datetime.datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp() < time.time()
+    except ValueError:
+        return False
 
 
 def _json(text, what):
@@ -490,15 +523,56 @@ class Join(Procedure):
             raise StepError("; ".join(problems))
         self.out("    verify passed")
 
+    def _nodes(self):
+        return _json(self._on_control(NODES_JSON, echo=False).output or "[]", "headscale nodes list") or []
+
+    def _mine(self, nodes):
+        return [n for n in nodes if str(n.get("given_name", "")).lower() == dns_label(self.alias)]
+
+    def _stale_keys(self, nodes):
+        """Pre-auth keys with this host's tags that no node uses and that are used up or expired."""
+        keys = _json(self._on_control(PREAUTH_KEYS_JSON, echo=False).output or "[]", "headscale preauthkeys list") or []
+        in_use = {str((n.get("pre_auth_key") or {}).get("id")) for n in nodes}
+        return [k for k in keys
+                if sorted(k.get("acl_tags") or []) == sorted(self.tags) and str(k.get("id")) not in in_use
+                and (k.get("used") or _expired(k))]
+
     def _undo_join(self):
         self._host(LOGOUT)
-        nodes = _json(self._on_control(NODES_JSON, echo=False).output or "[]", "headscale nodes list") or []
-        mine = [n for n in nodes if str(n.get("given_name", "")).lower() == dns_label(self.alias)]
+        nodes = self._nodes()
+        mine = self._mine(nodes)
         if not mine:
             self.out(f"    {self.control} lists no node named {dns_label(self.alias)}")
         for n in mine:
             self.out(f"    deleting node {n.get('id')} ({n.get('given_name')}) on {self.control}")
             self._on_control(delete_node(n.get("id")))
+        remaining = [n for n in nodes if n not in mine]
+        for k in self._stale_keys(remaining):
+            self.out(f"    deleting pre-auth key {k.get('id')} ({'used' if k.get('used') else 'expired'}) on {self.control}")
+            self._on_control(delete_preauth_key(k.get("id")))
+
+    def leftovers(self):
+        """Read-only: what join left on the host and in Headscale. Empty list = nothing."""
+        left = [line[len("TN-LEFT "):] for line in self._host(LEFTOVERS, echo=False).output.splitlines()
+                if line.startswith("TN-LEFT ")]
+        nodes = self._nodes()
+        left += [f"node {n.get('id')} ({n.get('given_name')}) in Headscale on {self.control}" for n in self._mine(nodes)]
+        left += [f"pre-auth key {k.get('id')} in Headscale on {self.control}" for k in self._stale_keys(nodes)]
+        return left
+
+    def after_rollback(self):
+        try:
+            left = self.leftovers()
+        except self.errors as e:
+            self.out(f"\nCould not check for leftovers: {e}")
+            return
+        if left:
+            self.out(f"\n✗ Still there after rollback ({len(left)}):")
+            for item in left:
+                self.out(f"  ✗ {item}")
+        else:
+            self.out(f"\n✓ Nothing left: no Tailscale files, unit, interface or process on {self.alias}, "
+                     f"and no node or key for it in Headscale on {self.control}.")
 
     def run_rollback(self, step):
         if step.number == 3:
@@ -568,9 +642,10 @@ class Join(Procedure):
                 ],
                 rollback=LOGOUT,
                 rollback_note=f"log out, then delete the node named {dns_label(a)} on {self.control} "
-                              "(`headscale nodes list -o json`, then `headscale nodes delete -i <id> --force`)",
+                              "(`headscale nodes delete -i <id> --force`) and its used or expired pre-auth keys "
+                              "(`headscale preauthkeys delete -i <id>`)",
                 run=self._run_join, undo=self._undo_join, brief="Join with a one-time tagged key",
-                undo_brief=f"log out, delete the node on {self.control}",
+                undo_brief=f"log out, delete the node and its key on {self.control}",
             ),
             Step(
                 6, "Verify",
@@ -654,7 +729,8 @@ class Join(Procedure):
         return f"{self.alias} joined region {self.region.name} as {dns_label(self.alias)}.{self.region.base_domain}."
 
     def rolled_back_message(self):
-        return f"Rolled back the join of {self.alias}."
+        return (f"Rolled back the join of {self.alias}. Kept on purpose: the download cache and run logs on this "
+                "machine, and the host's system journal.")
 
     def preflight(self):
         return self.run_once(self._run_preflight)

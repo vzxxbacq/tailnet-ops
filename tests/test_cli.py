@@ -67,7 +67,7 @@ class CliTest(TempDirTest):
         self.assertEqual(rc, 0, err)
         self.assertIn("cn-probe → region cn (its checker host): tailnet 100.64.0.0/16", out)
         self.assertIn("checks        not run (--offline)", out)
-        self.assertIn("  5  Join with a one-time tagged key  log out, delete the node on cn-control", out)
+        self.assertIn("  5  Join with a one-time tagged key  log out, delete the node and its key on cn-control", out)
         ready = "TN-FACT os=Ubuntu 24.04 LTS\nTN-FACT machine=x86_64\nTN-FACT arch=amd64\nTN-FACT port=free\nTN-FACT login=ok\n"
         with mock.patch.object(remote.SSHRunner, "run", lambda *a, **k: Result(0, ready)):
             (self.site / "pki").mkdir(mode=0o700)

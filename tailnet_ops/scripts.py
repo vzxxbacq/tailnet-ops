@@ -201,6 +201,9 @@ echo "installed $BIN ($got)"
 ROLLBACK_BINARY = r"""if [ ! -e "$BIN" ]; then echo "$BIN: absent"
 elif ours_bin; then rm -f "$BIN"; echo "removed $BIN"
 else echo "skip: $BIN is not the pinned build"; fi
+for d in /tmp/tn-headscale.*; do
+  if [ -d "$d" ]; then rm -rf "$d"; echo "removed the staging directory $d"; fi
+done
 """
 
 

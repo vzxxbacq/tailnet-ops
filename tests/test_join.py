@@ -241,22 +241,44 @@ class JoinApplyTest(TempDirTest):
         self.assertTrue(any("tn control apply cn" in line for line in self.out))
 
     def test_rollback(self):
-        nodes = [{"id": 7, "given_name": "cn-probe"}, {"id": 8, "given_name": "cn-other"}]
-        runner = FakeRunner(responses(nodes=nodes))
+        nodes = [{"id": 7, "given_name": "cn-probe", "pre_auth_key": {"id": 1}},
+                 {"id": 8, "given_name": "cn-other", "pre_auth_key": {"id": 2}}]
+        keys = [{"id": 1, "used": True, "acl_tags": ["tag:cn-server"]},            # this node's key
+                {"id": 2, "used": True, "acl_tags": ["tag:cn-server"]},            # still used by cn-other
+                {"id": 3, "used": False, "acl_tags": ["tag:cn-server"],
+                 "expiration": "2000-01-01T00:00:00Z"},                             # expired, unused
+                {"id": 4, "used": False, "acl_tags": ["tag:cn-server"],
+                 "expiration": "2999-01-01T00:00:00Z"},                             # still valid
+                {"id": 5, "used": True, "acl_tags": ["tag:cn-gateway"]}]           # other tags
+        runner = FakeRunner({**responses(nodes=nodes), join.PREAUTH_KEYS_JSON: json.dumps(keys)})
         job = self.job(runner)
         self.assertEqual(job.rollback(ask=lambda p: "no"), 1)
         self.assertEqual(runner.calls, [])
         self.assertEqual(job.rollback(yes=True), 0, "\n".join(self.out))
         sent = [(c[1], c[2]) for c in runner.calls]
         self.assertIn(join.LOGOUT.strip(), sent[0][1])
-        self.assertEqual(sent[1][0], "cn-control")
-        self.assertEqual(sent[2][0], "cn-control")
-        self.assertIn('"$BIN" nodes delete -i 7 --force', sent[2][1])
-        self.assertFalse(any("-i 8" in s for _h, s in sent))
-        self.assertIn(join.ROLLBACK_SERVICE.strip(), sent[3][1])
-        self.assertIn("update-ca-certificates --fresh", sent[4][1])
-        self.assertIn(CA.strip(), sent[4][1])
-        self.assertIn(join.ROLLBACK_BINARIES.strip(), sent[5][1])
+        deletes = [s for h, s in sent if "delete -i" in s]
+        self.assertEqual(len(deletes), 3, deletes)
+        self.assertIn('"$BIN" nodes delete -i 7 --force', deletes[0])
+        self.assertIn('"$BIN" preauthkeys delete -i 1', deletes[1])
+        self.assertIn('"$BIN" preauthkeys delete -i 3', deletes[2])
+        host_scripts = [s for h, s in sent if h == "cn-probe"]
+        self.assertIn(join.ROLLBACK_SERVICE.strip(), host_scripts[1])
+        self.assertIn("update-ca-certificates --fresh", host_scripts[2])
+        self.assertIn(CA.strip(), host_scripts[2])
+        self.assertIn(join.ROLLBACK_BINARIES.strip(), host_scripts[3])
+        self.assertIn(join.LEFTOVERS.strip(), host_scripts[4])
+        # The fake Headscale still lists the node, so the leftovers check reports it.
+        self.assertTrue(any("node 7 (cn-probe) in Headscale" in line for line in self.out), self.out)
+
+    def test_leftovers_clean(self):
+        runner = FakeRunner({**responses(nodes=[]), join.PREAUTH_KEYS_JSON: "[]", join.LEFTOVERS: ""})
+        job = self.job(runner)
+        self.assertEqual(job.leftovers(), [])
+        job.after_rollback()
+        self.assertTrue(any(line.startswith("\n✓ Nothing left") for line in self.out), self.out)
+        runner.responses[join.LEFTOVERS] = "TN-LEFT /var/lib/tailscale\nTN-LEFT interface tailscale0\n"
+        self.assertEqual(job.leftovers(), ["/var/lib/tailscale", "interface tailscale0"])
 
 
 class JoinScriptsTest(TempDirTest):
