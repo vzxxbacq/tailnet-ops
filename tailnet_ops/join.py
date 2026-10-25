@@ -312,9 +312,10 @@ def dns_label(alias):
     return re.sub(r"[^a-z0-9-]+", "-", alias.lower()).strip("-")
 
 
-def up_argv(region, alias, netfilter_mode):
+def up_argv(region, alias, netfilter_mode, accept_routes=False):
     argv = [TS_BIN, "up", f"--login-server={region.server_url}", "--auth-key=file:/dev/stdin",
-            f"--hostname={dns_label(alias)}", "--accept-dns=false", "--accept-routes=false", "--timeout=60s"]
+            f"--hostname={dns_label(alias)}", "--accept-dns=false",
+            f"--accept-routes={'true' if accept_routes else 'false'}", "--timeout=60s"]
     if netfilter_mode:
         argv.append(f"--netfilter-mode={netfilter_mode}")
     return argv
@@ -409,6 +410,10 @@ class Join(Procedure):
         self.port = (settings.tailscale_port if settings and settings.tailscale_port
                      else pins.DEFAULT_TAILSCALE_PORT)
         self.netfilter_mode = settings.netfilter_mode if settings else None
+        # Members take the alias routes the region's border advertises, so they reach the other
+        # region; a border does not, or it would route the alias range to itself through tailscale0.
+        self.lines_here = render.line_peers(site, self.region)
+        self.accept_routes = bool(self.lines_here) and not site.is_line_end(alias)
         self.control = self.region.control_host
         self.runner = runner
         self.out = out
@@ -451,6 +456,11 @@ class Join(Procedure):
             fails = [f"cannot log in over SSH as root: {last[0]}"]
         return {"facts": result.facts(), "fails": fails}
 
+    def _routes_text(self):
+        if self.accept_routes:
+            return "accept-routes on: " + "; ".join(f"{o.name} at {o.alias_net}" for _l, o in self.lines_here)
+        return "accept-routes off (a line border)" if self.site.is_line_end(self.alias) else "accept-routes off"
+
     def region_reason(self):
         h = self.site.host_settings.get(self.alias)
         if h and h.region:
@@ -491,7 +501,7 @@ class Join(Procedure):
         self.out(f"    a single-use, {pins.PREAUTH_KEY_EXPIRY} key for {', '.join(self.tags)} goes from "
                  f"{self.control} straight into `tailscale up` on {self.alias}; it is never shown or stored here")
         self.runner.pipe(self.control, scripts.wrap(self.control_prelude, preauth_key(self.tags)),
-                         self.alias, up_argv(self.region, self.alias, self.netfilter_mode))
+                         self.alias, up_argv(self.region, self.alias, self.netfilter_mode, self.accept_routes))
 
     def _run_verify(self):
         status = self._status()
@@ -519,9 +529,39 @@ class Join(Procedure):
         self.out(f"    {self.control} lists {len(mine)} node(s) named {dns_label(self.alias)}")
         if len(mine) != 1:
             problems.append(f"{self.control} should list exactly one node named {dns_label(self.alias)}")
+        if self.accept_routes and state == "Running" and v4:
+            problems += self._check_across(v4[0])
         if problems:
             raise StepError("; ".join(problems))
         self.out("    verify passed")
+
+    def _check_across(self, my_ip):
+        """From this host, with its tailnet address as the source, ping the far border of each line."""
+        problems = []
+        routes = self._host("ip -4 route show table 52 2>/dev/null\n", echo=False).output
+        for ln, other in self.lines_here:
+            alias = str(other.alias_net)
+            far = ln.responder if self.site.host_region(ln.initiator).name == self.region.name else ln.initiator
+            if alias not in routes:
+                problems.append(f"no route to {alias} (line {ln.name}); is the line applied and its route approved?")
+                self.out(f"    ✗ no route to {other.name} ({alias})")
+                continue
+            nodes = _json(self.runner.run(other.control_host, scripts.wrap(
+                scripts.control_prelude(self.site, other), NODES_JSON), privileged=True, echo=False).output or "[]",
+                "headscale nodes list") or []
+            node = next((n for n in nodes if str(n.get("given_name", "")).lower() == dns_label(far)), None)
+            ip = next((x for x in (node or {}).get("ip_addresses") or [] if ":" not in x), None)
+            if ip is None:
+                problems.append(f"{far} is not in region {other.name}'s tailnet")
+                continue
+            target = other.alias_of(ip)
+            out = self._host(f"ping -c 3 -W 2 -I {my_ip} {target} >/dev/null 2>&1 && echo TN-PING ok || echo TN-PING fail\n",
+                             echo=False).output
+            ok = "TN-PING ok" in out
+            self.out(f"    {'✓' if ok else '✗'} reaches {far} in {other.name} at {target} through line {ln.name}")
+            if not ok:
+                problems.append(f"cannot reach {far} at {target} through line {ln.name}")
+        return problems
 
     def _nodes(self):
         return _json(self._on_control(NODES_JSON, echo=False).output or "[]", "headscale nodes list") or []
@@ -638,7 +678,8 @@ class Join(Procedure):
                 [
                     Action(self.control, "make the key (stdout only)", preauth_key(self.tags), "control", True),
                     Action(a, "join with the key on stdin: "
-                           + " ".join(shlex.quote(x) for x in up_argv(r, a, self.netfilter_mode)), None, None, True),
+                           + " ".join(shlex.quote(x) for x in up_argv(r, a, self.netfilter_mode, self.accept_routes)),
+                           None, None, True),
                 ],
                 rollback=LOGOUT,
                 rollback_note=f"log out, then delete the node named {dns_label(a)} on {self.control} "
@@ -686,7 +727,7 @@ class Join(Procedure):
             f"  tags          {', '.join(self.tags)}",
             f"  tailscaled    udp/{self.port}, no log upload"
             + mark(port in ("free", "ours"), "port free" if port == "free" else "already ours", "port in use"),
-            f"  options       accept-dns off, accept-routes off, netfilter {nf}",
+            f"  options       accept-dns off, {self._routes_text()}, netfilter {nf}",
         ]
         if facts:
             out.append(f"  host          {facts.get('os', '?')}, {facts.get('machine', '?')}"
@@ -704,12 +745,13 @@ class Join(Procedure):
     def header(self):
         r, a = self.region, self.alias
         nf = self.netfilter_mode or "on (tailscaled adds its own rules)"
+        routes = self._routes_text()
         return "\n".join([
             f"{a} joins region {r.name} as {dns_label(a)}.{r.base_domain} (Tailscale {pins.TAILSCALE_VERSION})",
             f"  login server  {r.server_url} (Headscale on {self.control})",
             f"  tags          {', '.join(self.tags)}",
             f"  tailscaled    udp/{self.port}, no log upload",
-            f"  options       accept-dns off, accept-routes off, netfilter {nf}",
+            f"  options       accept-dns off, {routes}, netfilter {nf}",
             f"  adds          tailscale, tailscaled, tailscaled.service, {TS_STATE}, the site CA",
             "  leaves alone  everything else",
         ])

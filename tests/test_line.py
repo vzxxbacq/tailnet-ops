@@ -57,10 +57,10 @@ class LineSiteTest(TempDirTest):
         site = self.load_site()
         doc = json.loads("\n".join(l for l in render.policy(site, site.regions["cn"]).splitlines()
                                    if not l.startswith("//")))
-        self.assertIn({"src": ["owner@"], "dst": ["10.255.2.0/24"], "ip": ["*"]}, doc["grants"])
+        self.assertIn({"src": ["*"], "dst": ["10.255.2.0/24"], "ip": ["*"]}, doc["grants"])
         doc = json.loads("\n".join(l for l in render.policy(site, site.regions["cn"], skip_lines=("line1",)).splitlines()
                                    if not l.startswith("//")))
-        self.assertEqual(len(doc["grants"]), 2)
+        self.assertEqual(doc["grants"], [{"src": ["*"], "dst": ["*"], "ip": ["*"]}])
 
     def test_needs_port_and_tunnel(self):
         text = example_text(("port = 11011                       # UDP port", "# port"),

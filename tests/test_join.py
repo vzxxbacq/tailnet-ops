@@ -42,7 +42,11 @@ def responses(**kw):
         "mktemp -d /tmp/tn-tailscale.": "TN-FACT stage=/tmp/tn-tailscale.abc123\n",
         join.STATUS_JSON: kw.get("status", status(state="NeedsLogin")),
         join.NETCHECK_JSON: json.dumps({"UDP": True, "PreferredDERP": kw.get("derp", 901)}),
-        join.NODES_JSON: json.dumps(kw.get("nodes", [{"id": 7, "given_name": "cn-probe", "tags": ["tag:cn-server"]}])),
+        join.NODES_JSON: json.dumps(kw.get("nodes", [
+            {"id": 7, "given_name": "cn-probe", "tags": ["tag:cn-server"]},
+            {"id": 3, "given_name": "ovs-line", "ip_addresses": ["100.64.2.4", "fd7a:115c:a1e0::4"]}])),
+        "ip -4 route show table 52": kw.get("routes", "10.255.2.0/24 dev tailscale0 table 52\n"),
+        "echo TN-PING ok": "TN-PING ok\n" if kw.get("across", True) else "TN-PING fail\n",
     }
 
 
@@ -205,8 +209,26 @@ class JoinApplyTest(TempDirTest):
             ("status", "cn-probe", True),
             ("netcheck", "cn-probe", True),
             ("nodes", "cn-control", True),
+            ("nodes", "ovs-control", True),  # the far border's address, for the ping across line1
         ])
         self.assertIn("    verify passed", self.out)
+        self.assertIn("    ✓ reaches ovs-line in ovs at 10.255.2.4 through line line1", self.out)
+
+    def test_cross_region_failures(self):
+        runner = FakeRunner(responses(status=status(), routes=""))
+        with self.assertRaises(StepError) as cm:
+            self.job(runner)._run_verify()
+        self.assertIn("no route to 10.255.2.0/24 (line line1)", str(cm.exception))
+        runner = FakeRunner(responses(status=status(), across=False))
+        with self.assertRaises(StepError) as cm:
+            self.job(runner)._run_verify()
+        self.assertIn("cannot reach ovs-line at 10.255.2.4 through line line1", str(cm.exception))
+
+    def test_borders_do_not_take_routes(self):
+        site = self.load_site(example_text(('initiator = "cn-gateway"', 'initiator = "cn-probe"')), name="b")
+        self.assertFalse(join.Join(site, "cn-probe", ops=FakeOps()).accept_routes)
+        self.assertTrue(join.Join(self.site, "cn-probe", ops=FakeOps()).accept_routes)
+        self.assertIn("--accept-routes=true", " ".join(join.up_argv(self.site.regions["cn"], "x", None, True)))
 
     def test_skips_what_is_done(self):
         sums = f"TN-FACT arch=amd64\nTN-FACT tailscale={SUMS['tailscale']}\nTN-FACT tailscaled={SUMS['tailscaled']}\n"

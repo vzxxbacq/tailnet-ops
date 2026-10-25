@@ -84,7 +84,7 @@ For a region, `tn control apply` runs these steps:
    - Run `headscale configtest`.
 6. **Start.** Run `systemctl enable --now headscale` and wait for the local `/health`.
 7. **Real policy.**
-   - Create `owner_user` and write the real policy. In it, the region's tags are owned by `owner_user`, the tagged servers reach each other, and `owner_user` reaches all of them.
+   - Create `owner_user` and write the real policy. In it, the region's tags are owned by `owner_user`, every member reaches every member, and through each line every member reaches the other region's alias range.
    - Run `systemctl reload headscale` and check the journal for policy errors.
 8. **Verify** from `check_from`:
    - `/health` over TLS with `curl --cacert`;

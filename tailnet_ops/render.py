@@ -119,24 +119,21 @@ def line_peers(site, region, skip_lines=()):
 
 
 def policy(site, region, skip_lines=()):
-    """The starter policy: tagged servers reach each other, the owner reaches them all,
-    and through each line the owner reaches the other region's alias range."""
+    """Every member reaches every member of this tailnet, and through each line the other
+    region's alias range. The region's tags are owned by the owner, for tagged join keys."""
     owner = f"{site.owner_user}@"
     tags = list(region.tags)
     doc = {
         "tagOwners": {tag: [owner] for tag in tags},
-        "grants": [
-            {"src": tags, "dst": tags, "ip": ["*"]},
-            {"src": [owner], "dst": tags, "ip": ["*"]},
-        ],
+        "grants": [{"src": ["*"], "dst": ["*"], "ip": ["*"]}],
     }
     for _ln, other in line_peers(site, region, skip_lines):
         if other.alias_net is not None:
-            doc["grants"].append({"src": [owner], "dst": [str(other.alias_net)], "ip": ["*"]})
+            doc["grants"].append({"src": ["*"], "dst": [str(other.alias_net)], "ip": ["*"]})
     head = (
         f"// {marker(region)}\n"
-        f"// Starter policy for tailnet {region.name}: its tagged servers reach each other,\n"
-        f"// and {owner} reaches all of them. Written by tailnet-ops.\n"
+        f"// Policy for tailnet {region.name}: every member reaches every member, and the other\n"
+        "// region's alias range through each line. Written by tailnet-ops from site.toml.\n"
     )
     return head + json.dumps(doc, indent=2) + "\n"
 

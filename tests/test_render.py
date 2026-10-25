@@ -62,9 +62,8 @@ class RenderTest(TempDirTest):
         tags = ["tag:cn-server", "tag:cn-gateway"]
         self.assertEqual(doc["tagOwners"], {t: ["owner@"] for t in tags})
         self.assertEqual(doc["grants"], [
-            {"src": tags, "dst": tags, "ip": ["*"]},
-            {"src": ["owner@"], "dst": tags, "ip": ["*"]},
-            {"src": ["owner@"], "dst": ["10.255.2.0/24"], "ip": ["*"]},  # ovs, through line1
+            {"src": ["*"], "dst": ["*"], "ip": ["*"]},                 # every member reaches every member
+            {"src": ["*"], "dst": ["10.255.2.0/24"], "ip": ["*"]},     # and ovs, through line1
         ])
         self.assertNotIn("acls", doc)
         self.assertNotIn("ssh", doc)

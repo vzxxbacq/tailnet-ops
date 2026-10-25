@@ -179,6 +179,9 @@ class Site:
         raise SiteError(f"{alias}: in regions {', '.join(r.name for r in found)}; "
                         f"choose one with [hosts.{alias}] region")
 
+    def is_line_end(self, alias):
+        return any(alias in (ln.initiator, ln.responder) for ln in self.lines)
+
     def host_tags(self, alias):
         """[hosts.<alias>] tags, else the region's -server tag plus -gateway for a line
         initiator and -border for a line responder."""
