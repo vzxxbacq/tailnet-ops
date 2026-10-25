@@ -165,9 +165,9 @@ class Procedure:
                 return step
         return None
 
-    def apply(self, yes=False, ask=input):
+    def apply(self, yes=False, ask=input, checks=None):
         steps = self.steps()
-        self.out(self.summary_text().rstrip("\n").rsplit("\n\n", 1)[0])
+        self.out(self.summary_text(checks).rstrip("\n").rsplit("\n\n", 1)[0])
         self.out("\nCompare the plan id with the plan you approved.")
         if not yes:
             answer = ask(f"Type yes to apply these steps to {self.target}: ")

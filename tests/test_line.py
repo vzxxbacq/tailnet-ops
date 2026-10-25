@@ -214,7 +214,8 @@ class LineApplyTest(TempDirTest):
         runner = Ends()
         job = self.job(runner)
         self.assertEqual(job.apply(ask=lambda p: "no"), 1)
-        self.assertEqual(runner.calls, [])
+        self.assertTrue(runner.calls and all("checks passed; nothing was changed" in c[2] for c in runner.calls))
+        runner.calls.clear()
         self.assertEqual(job.apply(yes=True), 0, "\n".join(self.out))
         ends = {h: s for _r, h, s, _a, _p in runner.calls if "cat > \"$CONF.tn-new\"" in s}
         self.assertIn(f"PublicKey = {PUB_I}", ends["ovs-line"])
@@ -231,6 +232,14 @@ class LineApplyTest(TempDirTest):
         self.assertIn("10.255.2.0/24", policies[0][1])
         self.assertTrue(any("✓ cn → ovs: ovs-line-member at 10.255.2.7" in line for line in self.out), self.out)
         self.assertIn("Line line1 connects cn and ovs", self.out[-1])
+
+    def test_apply_shows_the_same_plan_id_as_plan(self):
+        runner = Ends()
+        planned = self.job(runner)
+        planned.check()
+        planned_id = planned.plan_id()
+        self.job(Ends()).apply(ask=lambda p: "no")
+        self.assertTrue(any(f"plan id {planned_id}" in line for line in self.out), self.out[:3])
 
     def test_verify_reports_each_host(self):
         runner = Ends(ping_ok=False)

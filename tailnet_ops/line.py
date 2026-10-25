@@ -703,3 +703,16 @@ class Line(Procedure):
 
     def verify(self):
         return self.run_once(self._run_verify)
+
+    def apply(self, yes=False, ask=input, checks=None):
+        """Read both ends first, as `tn line plan` does, so the plan id shown here matches."""
+        try:
+            checks = self.check()
+        except self.errors as e:
+            self.out(f"FAILED reading both ends: {e}")
+            return 1
+        if checks["fails"]:
+            self.out(self.summary_text(checks))
+            self.out("Not applied; nothing changed.")
+            return 1
+        return super().apply(yes=yes, ask=ask, checks=checks)
