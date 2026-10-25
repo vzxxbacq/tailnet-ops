@@ -11,7 +11,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import apple, join, macos, names, pins, scripts
+from . import apple, join, macos, names, pins, scripts, siteca
 from .procedure import Action, Procedure, Step, StepError
 from .site import dns_label, ensure_private_dir, write_private
 
@@ -35,6 +35,7 @@ class AppJoin(Procedure):
         self.out = out
         self.show = show or out                  # prints without logging: the block holds keys
         self.ca_pem = ca_pem
+        self.ca_from = None                      # the control host the CA came from, when pki/ has none
         self.clipboard = clipboard if clipboard is not None else copy_to_clipboard
         self.here = here                         # this machine: tn opens the profile and runs the block
         self.local = local or Local()
@@ -53,11 +54,14 @@ class AppJoin(Procedure):
                                privileged=True, echo=echo, check=check, secret=secret)
 
     def _ca(self):
+        """pki/ca.crt, else the copy on the control hosts (checked against their TLS)."""
         if self.ca_pem is None:
-            path = self.site.pki_dir / "ca.crt"
-            if not path.exists():
-                raise StepError(f"no site CA in {self.site.pki_dir}; run `tn control apply {self.region.name}` first")
-            self.ca_pem = path.read_text()
+            self.ca_pem = siteca.local(self.site)
+        if self.ca_pem is None:
+            pem, source = siteca.fetch(self.site, self.runner, self.regions)
+            if pem is None:
+                raise StepError(f"{siteca.missing(self.site, self.region)}; from the control hosts: {source}")
+            self.ca_pem, self.ca_from = pem, source
         return self.ca_pem
 
     def _nodes(self, region):
@@ -99,6 +103,9 @@ class AppJoin(Procedure):
         self.out(f"    every control host answers; user {self.site.owner_user} is in every region")
 
     def _run_profile(self):
+        if self.ca_from:
+            siteca.save(self.site, self._ca())
+            self.out(f"    saved the site CA certificate from {self.ca_from} to {siteca.path(self.site)}")
         ensure_private_dir(self.profile_path.parent)
         write_private(self.profile_path, apple.profile(self.site, self.name, self.label, self._ca()))
         self.out(f"    wrote {self.profile_path} (the site CA and the app's settings; no secret)")
@@ -301,6 +308,8 @@ class AppJoin(Procedure):
         else:
             out.append("  on the Mac    install the profile (AirDrop), paste one block in Terminal; no SSH, no tn")
         out.append(f"  this machine  writes {self.profile_path.parent}/{self.name}.*, makes single-use keys")
+        if self.ca_from:
+            out.append(f"  site CA       from {self.ca_from}: it authenticates every login server; a copy goes to pki/")
         if checks is None:
             out.append("  checks        not run (--offline)")
         elif checks["fails"]:

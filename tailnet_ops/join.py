@@ -14,7 +14,7 @@ import re
 import shlex
 import tarfile
 
-from . import macos, names, pins, render, scripts, targets
+from . import macos, names, pins, render, scripts, siteca, targets
 from .procedure import Action, Procedure, Step, StepError, fetch_pinned, sha256_file
 from .site import dns_label, ensure_private_dir, write_private
 
@@ -497,6 +497,8 @@ class Join(Procedure):
             self.prelude = host_prelude(site, m.name, self.port, logins, self.mark)
         self.remember = self.forget = None   # set by the CLI: record the join, drop the record
         self.ask_code = None                  # set by the CLI: (region, commands) -> a pasted link code
+        self._ca_pem = None
+        self.ca_from = None                   # the control host the CA came from, when pki/ has none
         self._reach = {}
         self.control_prelude = scripts.control_prelude(site, self.region)
         self.facts = {}
@@ -540,10 +542,23 @@ class Join(Procedure):
     def unreachable(self):
         return [r for r in self.regions if not self.can_reach(r)]
 
+    def site_ca(self):
+        """(pem, why not): pki/ca.crt, else the copy on the control hosts (checked against their TLS)."""
+        if self._ca_pem is None:
+            self._ca_pem = self.ops.ca_pem()
+        if self._ca_pem is None and self.runner is not None:
+            pem, source = siteca.fetch(self.site, self.runner, self.regions)
+            if pem is None:
+                return None, f"{siteca.missing(self.site, self.region)}; from the control hosts: {source}"
+            self._ca_pem, self.ca_from = pem, source
+        if self._ca_pem is None:
+            return None, siteca.missing(self.site, self.region)
+        return self._ca_pem, None
+
     def _ca(self):
-        ca = self.ops.ca_pem()
+        ca, problem = self.site_ca()
         if ca is None:
-            raise StepError(f"no site CA in {self.site.pki_dir}; run `tn control apply {self.region.name}` first")
+            raise StepError(problem)
         return ca
 
     def _preflight_script(self, ca):
@@ -554,9 +569,9 @@ class Join(Procedure):
 
     def check(self):
         """Run the read-only preflight and return {"facts", "fails"} for the short plan."""
-        ca = self.ops.ca_pem()
+        ca, problem = self.site_ca()
         if ca is None:
-            return {"facts": {}, "fails": [f"no site CA yet; run `tn control apply {self.region.name}` first"]}
+            return {"facts": {}, "fails": [problem]}
         result = self.runner.run(self.alias, scripts.wrap(self.prelude, self._preflight_script(ca)), privileged=True,
                                  check=False, echo=False)
         fails = [line.split("FAIL", 1)[1].strip() for line in result.output.splitlines()
@@ -882,6 +897,9 @@ class Join(Procedure):
                 self.forget(self.member)
 
     def before_steps(self):
+        if self.ca_from:
+            siteca.save(self.site, self._ca())
+            self.out(f"Saved the site CA certificate from {self.ca_from} to {siteca.path(self.site)}.")
         if self.remember:
             self.remember(self.member)
 
@@ -1135,6 +1153,8 @@ class Join(Procedure):
             x = self.site.region(name)
             out.append(f"  link code     {bad} this machine cannot log in to {x.control_host}: step 5 shows a command "
                        "to make a link code elsewhere, then asks you to paste it")
+        if self.ca_from:
+            out.append(f"  site CA       from {self.ca_from}: it authenticates every login server; a copy goes to pki/")
         if self.macos and facts.get("ca") == "no":
             out.append("  site CA       not trusted yet: macOS asks for your password or Touch ID in step 3")
         out += [f"  adds          {self._adds()}", "  leaves alone  everything else"]

@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tailnet_ops import join, pins, remote, scripts
+from tailnet_ops import join, pins, remote, scripts, siteca
 from tailnet_ops import site as sitemod
 from tailnet_ops.procedure import StepError
 from tests.helpers import FakeRunner, TempDirTest, bash, example_text, run_bash
@@ -136,7 +136,7 @@ class JoinPlanTest(TempDirTest):
         checks = join.Join(self.site, "cn-probe", runner=NoSSH(), ops=FakeOps()).check()
         self.assertEqual(checks["fails"], ["cannot log in over SSH as root: ssh: Could not resolve hostname cn-probe"])
         checks = join.Join(self.site, "cn-probe", runner=NoSSH(), ops=FakeOps(ca=None)).check()
-        self.assertIn("no site CA yet", checks["fails"][0])
+        self.assertIn("no site CA here", checks["fails"][0])
 
     def test_host_settings(self):
         site = self.load_site(example_text(("tailscale_port = 41641", "tailscale_port = 20002")), name="b")
@@ -291,8 +291,9 @@ class JoinApplyTest(TempDirTest):
     def test_needs_the_site_ca(self):
         runner = FakeRunner(responses())
         self.assertEqual(self.job(runner, ops=FakeOps(ca=None)).apply(yes=True), 1)
-        self.assertEqual(runner.calls, [])
-        self.assertTrue(any("tn control apply cn" in line for line in self.out))
+        # It only looked for the CA on the control hosts, which have none here; nothing else ran.
+        self.assertTrue(runner.calls and all(siteca.CA_CERT in c[2] for c in runner.calls))
+        self.assertTrue(any("copy ca.crt from the machine that ran `tn control apply`" in line for line in self.out))
 
     def test_rollback(self):
         nodes = [{"id": 7, "given_name": "cn-probe", "pre_auth_key": {"id": 1}},
