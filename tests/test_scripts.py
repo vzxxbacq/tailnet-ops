@@ -230,6 +230,15 @@ class PreflightPortsTest(SandboxTest):
         p = self.run_sandboxed(scripts.PREFLIGHT, STUB_BUSY_PORT="9443", STUB_BUSY_OWNER="headscale")
         self.assertIn("ok    tcp/9443 already used by our Headscale", p.stdout)
 
+    def test_reserved_tailscale_port(self):
+        ovs = self.site.regions["ovs"]
+        p = self.box.run(scripts.PREFLIGHT, ovs, STUB_BUSY_PORT="41641", STUB_BUSY_OWNER="dnsmasq")
+        self.assertIn("FAIL  udp/41641 is in use (reserved for Tailscale)", p.stdout)
+        p = self.box.run(scripts.PREFLIGHT, ovs, STUB_BUSY_PORT="41641", STUB_BUSY_OWNER="tailscaled")
+        self.assertIn("ok    udp/41641 already used by tailscaled (reserved for Tailscale)", p.stdout)
+        p = self.run_sandboxed(scripts.PREFLIGHT)
+        self.assertNotIn("reserved for Tailscale", p.stdout)
+
     def test_foreign_files_fail(self):
         self.etc.mkdir()
         self.bin.write_text("x")

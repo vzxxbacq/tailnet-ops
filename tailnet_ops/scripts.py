@@ -28,6 +28,8 @@ def _vars(pairs):
 
 def control_prelude(site, region):
     r = region
+    host = site.host_settings.get(r.control_host)
+    tailscale_port = host.tailscale_port if host and host.tailscale_port else ""
     return f"""set -euo pipefail
 umask 022
 {_vars([
@@ -39,6 +41,7 @@ umask 022
     ("STUN_PORT", r.stun_port),
     ("METRICS_PORT", r.metrics_port),
     ("GRPC_PORT", r.grpc_port),
+    ("TAILSCALE_PORT", tailscale_port),
     ("OFFICIAL_DERP", "yes" if r.official_derp else "no"),
     ("OWNER", site.owner_user),
     ("BIN", render.BIN),
@@ -111,7 +114,9 @@ if [ "$LISTEN" != 0.0.0.0 ]; then
 fi
 
 check_port() {
-  local proto=$1 port=$2 label=$3 lines
+  local proto=$1 port=$2 label=$3 owner=${4:-headscale} who lines
+  who="our Headscale"
+  if [ "$owner" != headscale ]; then who=$owner; fi
   if [ "$proto" = tcp ]; then
     lines=$(ss -H -ltnp "sport = :$port" 2>/dev/null || true)
   else
@@ -119,8 +124,8 @@ check_port() {
   fi
   if [ -z "$lines" ]; then
     pass "$proto/$port free ($label)"
-  elif ! printf '%s\n' "$lines" | grep -qv '"headscale"' && ours_etc; then
-    pass "$proto/$port already used by our Headscale ($label)"
+  elif ! printf '%s\n' "$lines" | grep -qv "\"$owner\"" && { [ "$owner" != headscale ] || ours_etc; }; then
+    pass "$proto/$port already used by $who ($label)"
   else
     flag "$proto/$port is in use ($label): $(printf '%s' "$lines" | tr -s ' ' | tr '\n' ' ' | cut -c1-160)"
   fi
@@ -129,6 +134,7 @@ check_port tcp "$PORT" "Headscale HTTPS and DERP"
 check_port udp "$STUN_PORT" "STUN"
 check_port tcp "$METRICS_PORT" "metrics on 127.0.0.1"
 check_port tcp "$GRPC_PORT" "gRPC on 127.0.0.1"
+if [ -n "$TAILSCALE_PORT" ]; then check_port udp "$TAILSCALE_PORT" "reserved for Tailscale" tailscaled; fi
 
 if [ ! -e "$ETC" ]; then pass "$ETC absent"
 elif ours_etc; then pass "$ETC exists and is ours"

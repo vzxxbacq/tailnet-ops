@@ -59,6 +59,12 @@ class PlanTest(TempDirTest):
                 if line:
                     self.assertIn(line, text)
 
+    def test_plan_shows_the_reserved_port(self):
+        text, _ = Deployment(self.site, "ovs").plan_text()
+        self.assertIn("reserves      udp 41641 for Tailscale on ovs-control", text)
+        self.assertIn("TAILSCALE_PORT=41641", text)
+        self.assertIn("TAILSCALE_PORT=''", Deployment(self.site, "cn").plan_text()[0])
+
     def test_plan_touches_nothing(self):
         dep = Deployment(self.site, "ovs", runner=None)
         dep.plan_text()

@@ -187,7 +187,7 @@ class Deployment:
         return [
             Step(
                 1, "Preflight",
-                ["Check arch, OS, root, systemd and tools; that the four ports are free or ours;",
+                ["Check arch, OS, root, systemd and tools; that the configured ports are free or ours;",
                  "that nothing named headscale exists unless tailnet-ops made it. Changes nothing."],
                 [Action(host, "read-only checks", scripts.PREFLIGHT, "control", True)],
                 rollback_note="none needed (read-only)", read_only=True, run=self._run_preflight,
@@ -282,6 +282,8 @@ class Deployment:
             f"  server_url    {r.server_url}",
             f"  listens on    tcp {r.listen_ipv4}:{r.port} (HTTPS + DERP) · udp {r.listen_ipv4}:{r.stun_port} (STUN)",
             f"                tcp 127.0.0.1:{r.metrics_port} (metrics) · tcp 127.0.0.1:{r.grpc_port} (gRPC)",
+            *([f"  reserves      udp {host.tailscale_port} for Tailscale on {r.control_host} (checked in preflight; used when it joins)"]
+              if (host := site.host_settings.get(r.control_host)) and host.tailscale_port else []),
             f"  tailnet       {r.ipv4_prefix} · {pins.IPV6_PREFIX}{avoid} · MagicDNS {r.base_domain}",
             f"  DERP          embedded region {r.derp_region_id} {r.derp_region_code!r} ({r.derp_region_name}); official map {official}",
             f"  certificate   SAN {', '.join('IP:' + ip for ip in r.cert_ips)}, signed by the site CA in pki/",
