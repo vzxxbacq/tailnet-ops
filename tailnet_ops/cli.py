@@ -163,12 +163,30 @@ def cmd_join(args):
     job = Join(site, runner=runner, out=console.out, member=target)
     job.remember = lambda m: targets.remember(site, m)
     job.forget = lambda m: targets.forget(site, m)
+    if ui.tty:
+        job.ask_code = code_asker(ui)
     try:
         if action is None:
             return join_asked(job, console, ui, target, offline=args.offline)
         return run_job(job, console, args, action)
     finally:
         console.close()
+
+
+def code_asker(ui):
+    """When this machine cannot log in to a control host: show how to make a link code elsewhere,
+    then read the pasted code without echo. The code is never printed or logged."""
+    from .join import code_problem
+
+    def ask(region, commands):
+        ui.say()
+        ui.warn(f"This machine cannot log in to {region.control_host}, the Headscale of {region.name}.")
+        ui.say(f"Make a single-use link code, valid {pins.JOIN_CODE_EXPIRY}, with one of these, then paste it here.")
+        for where, command in commands:
+            ui.say(f"  {where}:")
+            ui.command(command)
+        return ui.secret(f"Link code for {region.name}", check=code_problem)
+    return ask
 
 
 def join_asked(job, console, ui, target, offline=False):

@@ -329,6 +329,28 @@ def user_key(user_id):
 """
 
 
+CODE_RE = re.compile(r"^(?:hskey-auth-[A-Za-z0-9_-]{8,}|[0-9a-f]{48})$")
+CONTROL_PING = '"$BIN" version >/dev/null\n'
+
+
+def code_problem(code):
+    """None if code looks like a Headscale pre-auth key."""
+    return None if CODE_RE.match(code.strip()) else "a link code looks like hskey-auth-…"
+
+
+def code_commands(site, region, tags):
+    """[(where, command)] that make a link code by hand: on the control host, or over SSH to it."""
+    if tags:
+        make = f"sudo {render.BIN} preauthkeys create --expiration {pins.JOIN_CODE_EXPIRY} --tags {','.join(tags)}"
+    else:
+        user = (f"$(sudo {render.BIN} users list --name {shlex.quote(site.owner_user)} -o json"
+                " | grep -m1 '\"id\"' | tr -dc 0-9)")
+        make = f'sudo {render.BIN} preauthkeys create --expiration {pins.JOIN_CODE_EXPIRY} --user "{user}"'
+    return [(f"on {region.control_host}, the Headscale of {region.name}", make),
+            (f"or on a machine that can SSH to it (your alias for {region.control_host} there)",
+             f"ssh {region.control_host} {shlex.quote(make)}")]
+
+
 def _flag(value):
     return "true" if value else "false"
 
@@ -474,6 +496,8 @@ class Join(Procedure):
         else:
             self.prelude = host_prelude(site, m.name, self.port, logins, self.mark)
         self.remember = self.forget = None   # set by the CLI: record the join, drop the record
+        self.ask_code = None                  # set by the CLI: (region, commands) -> a pasted link code
+        self._reach = {}
         self.control_prelude = scripts.control_prelude(site, self.region)
         self.facts = {}
         if not self.tags and not self.personal:
@@ -497,10 +521,24 @@ class Join(Procedure):
         return self.runner.run(self.alias, scripts.wrap(self.prelude, body), args=args,
                                privileged=privileged, echo=echo)
 
-    def _on_control(self, body, echo=True, region=None):
+    def _on_control(self, body, echo=True, region=None, check=True):
         region = region or self.region
         prelude = self.control_prelude if region is self.region else scripts.control_prelude(self.site, region)
-        return self.runner.run(region.control_host, scripts.wrap(prelude, body), privileged=True, echo=echo)
+        return self.runner.run(region.control_host, scripts.wrap(prelude, body), privileged=True, echo=echo,
+                               check=check)
+
+    def can_reach(self, region):
+        """Whether this machine can run Headscale as root on the region's control host."""
+        if region.name not in self._reach:
+            try:
+                rc = self._on_control(CONTROL_PING, echo=False, region=region, check=False).rc
+            except self.errors:
+                rc = 1
+            self._reach[region.name] = rc == 0
+        return self._reach[region.name]
+
+    def unreachable(self):
+        return [r for r in self.regions if not self.can_reach(r)]
 
     def _ca(self):
         ca = self.ops.ca_pem()
@@ -528,7 +566,7 @@ class Join(Procedure):
             last = result.output.strip().splitlines()[-1:] or ["no answer"]
             how = "run as root on this machine (sudo)" if self.local else "log in over SSH as root"
             fails = [f"cannot {how}: {last[0]}"]
-        return {"facts": result.facts(), "fails": fails}
+        return {"facts": result.facts(), "fails": fails, "codes": [r.name for r in self.unreachable()]}
 
     def _dns_text(self):
         if self.dns_setting is not None:
@@ -623,10 +661,35 @@ class Join(Procedure):
             self.out("    already joined; no new key made; bringing its settings in line with the plan")
             self._host(set_prefs(self.accept_routes, self.accept_dns))
             return
-        self.out(f"    a single-use, {pins.PREAUTH_KEY_EXPIRY} key for {', '.join(self.tags)} goes from "
-                 f"{self.control} straight into `tailscale up` on {self.alias}; it is never shown or stored here")
-        self.runner.pipe(self.control, scripts.wrap(self.control_prelude, preauth_key(self.tags)),
-                         self.alias, self._argv(self.region))
+        self._log_in(self.region, "up", preauth_key(self.tags))
+
+    def _log_in(self, region, verb, key_script):
+        """`tailscale up` or `login` with a key: straight from the control host when this machine can
+        log in to it, else from a link code the user makes elsewhere and pastes."""
+        argv = self._argv(region, verb)
+        whose = f"user {self.site.owner_user}" if self.personal else ", ".join(self.tags)
+        if self.can_reach(region):
+            self.out(f"    {region.name}: a single-use, {pins.PREAUTH_KEY_EXPIRY} key for {whose} goes from "
+                     f"{region.control_host} straight into `tailscale {verb}` on {self.alias}; it is never shown "
+                     "or stored here")
+            self.runner.pipe(region.control_host, scripts.wrap(scripts.control_prelude(self.site, region), key_script),
+                             self.alias, argv)
+            return
+        commands = code_commands(self.site, region, self.tags)
+        if self.ask_code is None:
+            raise StepError(f"cannot log in to {region.control_host}; make a link code where you can with "
+                            f"`{commands[0][1]}` and run tn join in a terminal to paste it")
+        code = self.ask_code(region, commands)
+        self.out(f"    {region.name}: the link code goes into `tailscale {verb}` on {self.alias}; it is not stored")
+        self.runner.feed(self.alias, argv, code)
+
+    def _run_names(self):
+        missing = [r for r in self.site.regions.values() if not self.can_reach(r)]
+        if missing:
+            self.out(f"    skipped: this machine cannot log in to {', '.join(r.control_host for r in missing)}. "
+                     "Run `tn dns sync` on a machine that can; until then the other regions do not know this name.")
+            return
+        names.Names(self.site, self.runner, self.out).sync()
 
     def _profiles(self):
         """The device's Tailscale profiles by nickname; a personal device has one per region."""
@@ -653,12 +716,8 @@ class Join(Procedure):
                     self._host(set_prefs(self.routes_in(r), self.accept_dns))
                     continue
                 verb = "up"   # the profile is there but logged out: log it in again in place
-            self.out(f"    {r.name}: a single-use, {pins.PREAUTH_KEY_EXPIRY} key for user {self.site.owner_user} goes "
-                     f"from {r.control_host} straight into `tailscale {verb}` on {self.alias}; it is never shown or "
-                     "stored here")
-            key = user_key(self._owner_id(r))
-            self.runner.pipe(r.control_host, scripts.wrap(scripts.control_prelude(self.site, r), key),
-                             self.alias, self._argv(r, verb))
+            key = user_key(self._owner_id(r)) if self.can_reach(r) else None
+            self._log_in(r, verb, key)
         self._host(switch(self.region))
 
     def _run_verify(self):
@@ -689,6 +748,9 @@ class Join(Procedure):
         if derp != self.region.derp_region_id:
             problems.append(f"preferred DERP region is {derp}, expected {self.region.derp_region_id}")
         for r in self.regions:
+            if not self.can_reach(r):
+                self.out(f"    {r.control_host}: not checked (this machine cannot log in to it)")
+                continue
             mine = self._mine(self._nodes(r))
             self.out(f"    {r.control_host} lists {len(mine)} node(s) named {self.label}")
             if len(mine) != 1:
@@ -710,6 +772,10 @@ class Join(Procedure):
             if routes is not None and alias not in routes:
                 problems.append(no_route)
                 self.out(f"    ✗ no route to {other.name} ({alias})")
+                continue
+            if not self.can_reach(other):
+                self.out(f"    {other.name}: the ping across line {ln.name} is not checked "
+                         f"(this machine cannot log in to {other.control_host} to find {far})")
                 continue
             nodes = _json(self.runner.run(other.control_host, scripts.wrap(
                 scripts.control_prelude(self.site, other), NODES_JSON), privileged=True, echo=False).output or "[]",
@@ -758,6 +824,11 @@ class Join(Procedure):
     def _undo_join(self):
         self._host(LOGOUT, args=[r.name for r in self.regions] if self.personal else ())
         for r in self.regions:
+            if not self.can_reach(r):
+                self.out(f"    this machine cannot log in to {r.control_host}; delete the node there by hand:\n"
+                         f"      sudo {render.BIN} nodes list | grep -w {self.label}\n"
+                         f"      sudo {render.BIN} nodes delete -i <ID> --force")
+                continue
             nodes = self._nodes(r)
             mine = self._mine(nodes)
             if not mine:
@@ -779,6 +850,9 @@ class Join(Procedure):
         left = [line[len("TN-LEFT "):] for line in self._host(self._leftovers_script(), echo=False).output.splitlines()
                 if line.startswith("TN-LEFT ")]
         for r in self.regions:
+            if not self.can_reach(r):
+                self.out(f"    Headscale on {r.control_host}: not checked (this machine cannot log in to it)")
+                continue
             nodes = self._nodes(r)
             left += [f"node {n.get('id')} ({n.get('given_name')}) in Headscale on {r.control_host}" for n in self._mine(nodes)]
             left += [f"pre-auth key {k.get('id')} in Headscale on {r.control_host}" for k in self._stale_keys(nodes, r)]
@@ -927,6 +1001,7 @@ class Join(Procedure):
                            None, None, True),
                     Action(a, "if it is already joined, set the same options instead",
                            set_prefs(self.accept_routes, self.accept_dns), "host", True),
+                    self._code_action(r),
                 ],
                 rollback=LOGOUT,
                 rollback_note=f"log out, then delete the node named {self.label} on {self.control} "
@@ -946,6 +1021,7 @@ class Join(Procedure):
         actions += [
             Action(a, "if a region's profile is already joined, switch to it and set the same options instead",
                    set_prefs(self.accept_routes, self.accept_dns), "host", True),
+            *[self._code_action(x) for x in self.regions],
             Action(a, f"end on {r.name}", switch(r), "host", True),
         ]
         return Step(
@@ -964,6 +1040,11 @@ class Join(Procedure):
             undo_brief=f"log out, delete the nodes and keys on {controls}",
         )
 
+    def _code_action(self, region):
+        return Action("you", f"only if this machine cannot log in to {region.control_host}: make a single-use, "
+                      f"{pins.JOIN_CODE_EXPIRY} link code where you can, and paste it when step 5 asks",
+                      code_commands(self.site, region, self.tags)[0][1] + "\n")
+
     def steps(self):
         a, r = self.alias, self.region
         controls = ", ".join(x.control_host for x in self.regions)
@@ -978,8 +1059,7 @@ class Join(Procedure):
                         names.write([{"name": "<name>.<suffix>", "type": "A", "value": "<alias address>"}]),
                         "control", True)],
                 rollback_note="none separate: the names are updated again after a rollback",
-                run=lambda: names.Names(self.site, self.runner, self.out).sync(),
-                brief="Update the cross-region names", undo_brief="updated after rollback",
+                run=self._run_names, brief="Update the cross-region names", undo_brief="updated after rollback",
             ),
             Step(
                 7, "Verify",
@@ -1047,6 +1127,10 @@ class Join(Procedure):
         if facts:
             out.append(f"  host          {facts.get('os', '?')}, {facts.get('machine', '?')}"
                        + ("  (already joined by tailnet-ops)" if facts.get("joined") == "ours" else ""))
+        for name in (checks or {}).get("codes", []):
+            x = self.site.region(name)
+            out.append(f"  link code     {bad} this machine cannot log in to {x.control_host}: step 5 shows a command "
+                       "to make a link code elsewhere, then asks you to paste it")
         if self.macos and facts.get("ca") == "no":
             out.append("  site CA       not trusted yet: macOS asks for your password or Touch ID in step 3")
         out += [f"  adds          {self._adds()}", "  leaves alone  everything else"]

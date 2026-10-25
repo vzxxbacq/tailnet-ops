@@ -160,8 +160,9 @@ class JoinApplyTest(TempDirTest):
         job = self.job(runner)
         job.remember = lambda m: self.fail("recorded without yes")
         self.assertEqual(job.apply(ask=lambda p: "no"), 1)
-        # Only the read-only preflight ran, to show the plan.
-        self.assertTrue(runner.calls and all('pass "/dev/net/tun"' in c[2] for c in runner.calls))
+        # Only the read-only preflight ran, plus a look at whether this machine can log in to Headscale.
+        self.assertTrue(runner.calls and all('pass "/dev/net/tun"' in c[2] or join.CONTROL_PING in c[2]
+                                             for c in runner.calls))
 
     def test_runs_every_step(self):
         state = {"joined": False}

@@ -29,6 +29,7 @@ TAILSCALE_BIN_SHA256 = {
 TAILSCALE_URL = "https://pkgs.tailscale.com/stable/tailscale_{version}_{arch}.tgz"
 DEFAULT_TAILSCALE_PORT = 41641
 PREAUTH_KEY_EXPIRY = "10m"
+JOIN_CODE_EXPIRY = "30m"   # a link code made by hand elsewhere and pasted in
 
 OFFICIAL_DERP_MAP = "https://controlplane.tailscale.com/derpmap/default"
 IPV6_PREFIX = "fd7a:115c:a1e0::/48"

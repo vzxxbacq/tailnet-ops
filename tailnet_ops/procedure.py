@@ -19,7 +19,7 @@ class StepError(Exception):
 
 @dataclass
 class Action:
-    where: str            # "local" or an SSH alias
+    where: str            # "local", "you" (by hand) or an SSH alias
     what: str
     body: str = None      # remote script body, printed verbatim
     prelude: str = None   # which prelude the body runs after (a key of Procedure.preludes())
@@ -137,9 +137,11 @@ class Procedure:
             out += [f"  {line}" for line in step.what]
             for i, action in enumerate(step.actions, 1):
                 label = f"{step.number}.{i}" if len(step.actions) > 1 else f"{step.number}"
-                who = "this machine" if action.where == "local" else (
-                    f"{action.where} as root" if action.privileged else f"{action.where} as the SSH user")
-                out.append(f"  {label} on {who}: {action.what}")
+                who = "on this machine" if action.where == "local" else (
+                    f"on {action.where} as root" if action.privileged else f"on {action.where} as the SSH user")
+                if action.where == "you":
+                    who = "by you"
+                out.append(f"  {label} {who}: {action.what}")
                 if action.body:
                     out.append(indent(action.body))
             if step.rollback:

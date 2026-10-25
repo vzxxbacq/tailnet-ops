@@ -56,6 +56,16 @@ class UI:
     def note(self, text):
         self._write(f"  {self.dim(text)}\n")
 
+    def say(self, text=""):
+        self._write(f"{text}\n")
+
+    def warn(self, text):
+        self._write(f"{self._style('!', '33')} {self.bold(text)}\n")
+
+    def command(self, text):
+        """A command to copy: on its own line, indented, nothing else on it."""
+        self._write(f"\n    {text}\n\n")
+
     def _done(self, title, answer):
         self._write(f"{self.accent('✔')} {self.bold(title)} {self.accent(answer)}\n")
 
@@ -74,6 +84,23 @@ class UI:
             answer = self._line(f"{self.accent('?')} {self.bold(title)}{hint} ") or (default or "")
             problem = check(answer) if check else (None if answer else "an answer is needed")
             if problem is None:
+                return answer
+            self._write(f"  {problem}\n")
+        raise ValueError(f"no valid answer for: {title}")
+
+    def secret(self, title, check=None):
+        """A line typed or pasted without echo, such as a link code."""
+        import getpass
+
+        for _ in range(3):
+            prompt = f"{self.accent('?')} {self.bold(title)} {self.dim('(hidden, paste and press Enter)')} "
+            if self.tty:
+                answer = getpass.getpass(prompt, stream=self.out).strip()
+            else:
+                answer = self._line(prompt)
+            problem = check(answer) if check else (None if answer else "an answer is needed")
+            if problem is None:
+                self._done(title, "received")
                 return answer
             self._write(f"  {problem}\n")
         raise ValueError(f"no valid answer for: {title}")

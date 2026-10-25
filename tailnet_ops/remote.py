@@ -137,6 +137,23 @@ class SSHRunner:
         if dst_rc != 0:
             raise RemoteError(f"command on {dst_host} exited with {dst_rc}")
 
+    def feed(self, host, argv, secret):
+        """Run argv as root on host with secret on its stdin. The secret is never printed or logged.
+        Used for a link code that the user pasted."""
+        self._log(f"$ {'this machine' if host in self.local_hosts else f'ssh {host}'} (root) {' '.join(argv)} "
+                  "<- the link code on stdin")
+        p = subprocess.Popen(self.command(host, privileged_command(argv, self._interactive(host))),
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        p.stdin.write(secret.strip() + "\n")
+        p.stdin.close()
+        for line in p.stdout:
+            line = line.rstrip("\n")
+            self._log(line)
+            self.out(f"    {line}")
+        rc = p.wait()
+        if rc != 0:
+            raise RemoteError(f"command on {host} exited with {rc}")
+
     def upload(self, host, local, remote):
         if host in self.local_hosts:
             self._log(f"$ cp {local} {remote}")
