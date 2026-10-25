@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from . import pins
 from .privacy import CGNAT
-from .site import HOST_RE, REGION_NAME_RE, TAILSCALE_RESERVED, USER_RE
+from .site import HOST_RE, REGION_NAME_RE, TAILSCALE_RESERVED, USER_RE, suffix_problem
 
 # Read-only. Runs as the SSH login user.
 FACTS_SCRIPT = r"""set -u
@@ -162,6 +162,8 @@ def ask_answers(asker):
     a = {"regions": [], "lines": []}
     a["site"] = asker.ask("Site name", "home", lambda v: None if re.match(r"^[A-Za-z0-9 ._-]{1,40}$", v) else "letters, digits, ' ', '.', '_' or '-'")
     a["owner_user"] = asker.ask("Headscale user that owns the tags", "owner", _check_user)
+    a["dns_suffix"] = asker.ask("DNS suffix for every region; hosts become <name>.<suffix>", "tailnet.internal",
+                                suffix_problem)
     while True:
         n = len(a["regions"]) + 1
         name = asker.ask(f"Region {n} name (empty to finish)" if n > 1 else "Region 1 name (e.g. cn)",
@@ -176,6 +178,10 @@ def ask_answers(asker):
             "ipv4_prefix": asker.ask(
                 f"  {name}: tailnet IPv4 prefix inside 100.64.0.0/10 (empty to pick a free /24)",
                 None, _check_prefix, allow_empty=True),
+            "members": [m.strip() for m in asker.ask(
+                f"  {name}: other machines in this region, as SSH aliases (comma-separated, empty for none)",
+                None, lambda v: None if all(HOST_RE.match(m.strip()) for m in v.split(",") if m.strip())
+                else "SSH aliases separated by commas", allow_empty=True).split(",") if m.strip()],
             "ports": parse_ports(asker.ask(
                 f"  {name}: ports the provider lets in to the control host, used in order for HTTPS, STUN and "
                 "Tailscale (e.g. 20000-20002; empty if any port can be opened)",
@@ -280,7 +286,8 @@ def derive(answers, facts, hostnames):
     Returns (data, notes, comments) where comments maps (table, key) -> text.
     """
     notes, comments = [], {}
-    data = {"site": {"name": answers["site"], "owner_user": answers["owner_user"]}, "regions": {}}
+    data = {"site": {"name": answers["site"], "owner_user": answers["owner_user"],
+                     "dns_suffix": answers.get("dns_suffix", "tailnet.internal")}, "regions": {}}
     used = []
     host_ports = {}
     initiators = {ln["initiator"] for ln in answers["lines"]}
@@ -347,7 +354,6 @@ def derive(answers, facts, hostnames):
             "stun_port": stun,
             "ipv4_prefix": str(prefix),
             "avoid_prefixes": avoid,
-            "base_domain": f"{name}.tailnet.internal",
             "derp_region_id": 901 + i,
             "derp_region_code": name,
             "derp_region_name": f"{name.upper()} {host}",
@@ -398,6 +404,10 @@ def derive(answers, facts, hostnames):
         if f is not None and f.cgnat_resolvers():
             hosts.setdefault(alias, {})["netfilter_mode"] = "off"
             comments[(f"hosts.{alias}", "netfilter_mode")] = "its resolvers sit inside 100.64.0.0/10"
+    for ra in answers["regions"]:
+        for alias in ra.get("members", []):
+            if alias not in (ra["control_host"], ra["check_from"]):
+                hosts.setdefault(alias, {})["region"] = ra["name"]
     for alias, port in host_ports.items():
         hosts.setdefault(alias, {})["tailscale_port"] = port
         comments[(f"hosts.{alias}", "tailscale_port")] = "UDP for tailscaled --port, the next allowed port"

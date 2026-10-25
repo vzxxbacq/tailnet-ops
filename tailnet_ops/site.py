@@ -13,6 +13,7 @@ from .privacy import CGNAT, TOOL_NET
 
 DEFAULT_SITE_DIR = "~/.config/tailnet-ops"
 SITE_FILE = "site.toml"
+DEFAULT_DNS_SUFFIX = "tailnet.internal"
 NOTES_FILE = "notes.md"
 
 # Tailscale keeps these inside 100.64.0.0/10 for itself (MagicDNS 100.100.100.100, ChromeOS).
@@ -26,6 +27,22 @@ USER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
 TAG_RE = re.compile(r"^tag:[a-z0-9][a-z0-9-]*$")
 DNS_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$")
 HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+LABEL_RE = re.compile(r"^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
+RESERVED_SUFFIXES = ("local", "localhost")  # mDNS and loopback
+
+
+def suffix_problem(value):
+    """None if value can be a MagicDNS suffix: a DNS name, one label or more (e.g. vlan, vlan.internal)."""
+    if value in RESERVED_SUFFIXES or value.endswith(".local"):
+        return f"{value!r} is reserved (mDNS or loopback)"
+    if DNS_RE.match(value) or LABEL_RE.match(value):
+        return None
+    return f"{value!r} is not a DNS name"
+
+
+def dns_label(alias):
+    """A host's name in MagicDNS: its SSH alias, lower-case, with other characters as '-'."""
+    return re.sub(r"[^a-z0-9-]+", "-", alias.lower()).strip("-")
 
 
 class SiteError(Exception):
@@ -143,6 +160,7 @@ class Site:
     lines: list = field(default_factory=list)
     host_settings: dict = field(default_factory=dict)
     directory: Path = None
+    dns_suffix: str = DEFAULT_DNS_SUFFIX
 
     def region(self, name):
         if name not in self.regions:
@@ -273,6 +291,7 @@ def write_private(path, data, mode=0o600):
 # --- site.toml -------------------------------------------------------------------
 
 SITE_KEYS = {"name": str, "owner_user": str}
+SITE_OPTIONAL = {"dns_suffix": str}
 REGION_KEYS = {
     "control_host": str,
     "check_from": str,
@@ -282,14 +301,13 @@ REGION_KEYS = {
     "stun_port": int,
     "ipv4_prefix": str,
     "avoid_prefixes": list,
-    "base_domain": str,
     "derp_region_id": int,
     "derp_region_code": str,
     "derp_region_name": str,
     "official_derp": bool,
     "tags": list,
 }
-REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int, "alias_ipv4": str}
+REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int, "alias_ipv4": str, "base_domain": str}
 HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str, "region": str, "tags": list}
 NETFILTER_MODES = ("on", "nodivert", "off")
 LINE_OPTIONAL = {"port": int, "tunnel_ipv4": str}
@@ -360,7 +378,10 @@ def parse(data, known_host=None, directory=None):
     if not isinstance(site_table, dict):
         problems.append("missing [site]")
         site_table = {}
-    s = _typed("site", site_table, SITE_KEYS, {}, problems)
+    s = _typed("site", site_table, SITE_KEYS, SITE_OPTIONAL, problems)
+    dns_suffix = s.get("dns_suffix", DEFAULT_DNS_SUFFIX)
+    if suffix_problem(dns_suffix):
+        problems.append(f"site.dns_suffix: {suffix_problem(dns_suffix)}")
     if "owner_user" in s and not USER_RE.match(s["owner_user"]):
         problems.append(f"site.owner_user: {s['owner_user']!r} is not a valid Headscale user name")
 
@@ -379,6 +400,7 @@ def parse(data, known_host=None, directory=None):
         r = _typed(where, table, REGION_KEYS, REGION_OPTIONAL, problems)
         if len(r) < len(REGION_KEYS):
             continue
+        r.setdefault("base_domain", dns_suffix)  # one suffix for every region: a name is the same everywhere
         for key in ("control_host", "check_from"):
             if not HOST_RE.match(r[key]):
                 problems.append(f"{where}.{key}: {r[key]!r} is not an SSH alias")
@@ -392,8 +414,8 @@ def parse(data, known_host=None, directory=None):
         tcp_ports = [r["port"], r.get("metrics_port", pins.DEFAULT_METRICS_PORT), r.get("grpc_port", pins.DEFAULT_GRPC_PORT)]
         if len(set(tcp_ports)) != len(tcp_ports):
             problems.append(f"{where}: port, metrics_port and grpc_port must differ")
-        if not DNS_RE.match(r["base_domain"]):
-            problems.append(f"{where}.base_domain: {r['base_domain']!r} is not a DNS name")
+        if suffix_problem(r["base_domain"]):
+            problems.append(f"{where}.base_domain: {suffix_problem(r['base_domain'])}")
         if not 900 <= r["derp_region_id"] <= 999:
             problems.append(f"{where}.derp_region_id: use 900-999 for self-hosted DERP regions")
         if not r["derp_region_code"] or not r["derp_region_name"]:
@@ -441,11 +463,10 @@ def parse(data, known_host=None, directory=None):
 
     distinct("derp_region_id", "region id")
     distinct("derp_region_code", "region code")
-    distinct("base_domain", "base domain")
     distinct("control_host", "control host")
     for name, r in regions.items():
         for other, o in regions.items():
-            if other != name and r.base_domain.endswith("." + o.base_domain):
+            if other != name and r.base_domain != o.base_domain and r.base_domain.endswith("." + o.base_domain):
                 problems.append(f"regions.{name}.base_domain: {r.base_domain} sits inside region {other}'s domain")
 
     site_hosts = {h for r in regions.values() for h in (r.control_host, r.check_from)}
@@ -563,9 +584,17 @@ def parse(data, known_host=None, directory=None):
                 problems.append(f"{where}: {alias} overlaps {label} ({other})")
         taken.append((where, alias))
 
+    # Hosts become <name>.<suffix>; with a shared suffix, a name must be unique across regions.
+    labels = {}
+    for alias in sorted(site_hosts | named | set(host_settings)):
+        labels.setdefault(dns_label(alias), []).append(alias)
+    for label, aliases in labels.items():
+        if len(aliases) > 1:
+            problems.append(f"hosts {', '.join(aliases)} would all be named {label} in DNS; rename one SSH alias")
+
     if problems:
         raise SiteError(problems)
-    return Site(name=s["name"], owner_user=s["owner_user"], regions=regions, lines=lines,
+    return Site(name=s["name"], owner_user=s["owner_user"], dns_suffix=dns_suffix, regions=regions, lines=lines,
                 host_settings=host_settings, directory=directory)
 
 

@@ -21,7 +21,7 @@ import ipaddress
 import json
 import re
 
-from . import firewall, render, scripts
+from . import firewall, names, render, scripts
 from .join import NODES_JSON, TS_BIN, dns_label
 from .procedure import Action, Procedure, Step, StepError
 
@@ -568,6 +568,11 @@ class Line(Procedure):
 
     def after_rollback(self):
         try:
+            self.out("\n== names")
+            names.Names(self.site, self.runner, self.out).sync(skip_lines=(self.line.name,))
+        except self.errors as e:
+            self.out(f"Could not update the cross-region names: {e}")
+        try:
             left = self.leftovers()
         except self.errors as e:
             self.out(f"\nCould not check for leftovers: {e}")
@@ -629,7 +634,16 @@ class Line(Procedure):
                  rollback_note="stop advertising, unapprove, policies without this line",
                  run=self._run_routes, undo=self._undo_routes, host=both, rollback_host=both,
                  brief="Advertise, approve, update both policies", undo_brief="withdraw them"),
-            Step(6, "Check across",
+            Step(6, "Names",
+                 [f"Each region's MagicDNS gets the other region's hosts: <name>.{ri.base_domain} at their alias",
+                  "addresses. Headscale reloads them by itself."],
+                 [Action(ri.control_host, "list nodes, write the extra records file",
+                         names.write([{"name": "<name>.<suffix>", "type": "A", "value": "<alias address>"}]),
+                         "control", True)],
+                 rollback_note="none separate: rollback updates the names without this line",
+                 run=lambda: names.Names(self.site, self.runner, self.out).sync(), host=both,
+                 brief="Names for the other region's hosts", undo_brief="removed by rollback"),
+            Step(7, "Check across",
                  [f"Ping through the tunnel both ways; then from each end, with its tailnet address as the source,",
                   "ping the alias of every host in the other region. Read-only."],
                  [Action(ini, "ping", ping(r_ip), "initiator", True), Action(res, "ping", ping(i_ip), "responder", True)],
@@ -684,7 +698,9 @@ class Line(Procedure):
 
     def preludes(self):
         return [(f"{self.line.initiator}, initiator", self.preludes_by_side["initiator"]),
-                (f"{self.line.responder}, responder", self.preludes_by_side["responder"])]
+                (f"{self.line.responder}, responder", self.preludes_by_side["responder"]),
+                (f"{self.regions['initiator'].control_host}, control host (the same on each)",
+                 self.control_preludes["initiator"])]
 
     def plan_intro(self):
         return ("Every script runs as `bash -s` over SSH as root: the prelude of its end, then the step body\n"

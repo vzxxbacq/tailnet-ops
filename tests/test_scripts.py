@@ -193,7 +193,8 @@ class ConfigurationTest(SandboxTest):
         body = self.dep.configuration_body()
         p = self.run_sandboxed(body)
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(p.stdout.count("wrote "), 3)
+        self.assertEqual(p.stdout.count("wrote "), 4)  # config, policy {}, extra records [], unit
+        self.assertEqual((self.etc / "extra-records.json").read_text(), "[]\n")
         self.assertEqual((self.etc / "config.yaml").read_text(), render.headscale_config(self.site, self.dep.region))
         self.assertEqual((self.etc / "policy.hujson").read_text(), "{}\n")
         self.assertEqual(self.unit.read_text(), render.systemd_unit(self.dep.region))

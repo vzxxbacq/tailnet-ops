@@ -35,7 +35,7 @@ The first site is the owner's. Its configuration and notes are in the owner's si
 
 `examples/site.example.toml` documents the schema:
 
-- `[site]`;
+- `[site]`, with `dns_suffix`: every host is `<name>.<suffix>` in every region, resolved by MagicDNS to its tailnet address at home and to its alias address in the regions that reach it through a line;
 - one `[regions.<name>]` per tailnet;
 - optional `[hosts.<alias>]` with `tailscale_port` (a fixed UDP port for tailscaled), `netfilter_mode`, `region` (for hosts that neither control nor check a region) and `tags` (default: the region's `-server` tag, plus `-gateway` for a line initiator and `-border` for a line responder), used when a host joins;
 - optional `[[lines]]`, each with `initiator`, `responder`, `responder_entry_ipv4`, `one_way`, and for the tunnel `port` (UDP on the entry) and `tunnel_ipv4` (a private /30: .1 initiator, .2 responder).

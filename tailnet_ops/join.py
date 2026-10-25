@@ -8,9 +8,9 @@ import re
 import shlex
 import tarfile
 
-from . import pins, render, scripts
+from . import names, pins, render, scripts
 from .procedure import Action, Procedure, Step, StepError, fetch_pinned, sha256_file
-from .site import ensure_private_dir, write_private
+from .site import dns_label, ensure_private_dir, write_private
 
 TS_BIN = "/usr/local/bin/tailscale"
 TSD_BIN = "/usr/local/sbin/tailscaled"
@@ -308,8 +308,6 @@ def preauth_key(tags):
 """
 
 
-def dns_label(alias):
-    return re.sub(r"[^a-z0-9-]+", "-", alias.lower()).strip("-")
 
 
 def up_argv(region, alias, netfilter_mode, accept_routes=False):
@@ -602,6 +600,11 @@ class Join(Procedure):
 
     def after_rollback(self):
         try:
+            self.out("\n== names")
+            names.Names(self.site, self.runner, self.out).sync()
+        except self.errors as e:
+            self.out(f"Could not update the cross-region names: {e}")
+        try:
             left = self.leftovers()
         except self.errors as e:
             self.out(f"\nCould not check for leftovers: {e}")
@@ -689,7 +692,19 @@ class Join(Procedure):
                 undo_brief=f"log out, delete the node and its key on {self.control}",
             ),
             Step(
-                6, "Verify",
+                6, "Names",
+                [f"Give every region that reaches {r.name} through a line a DNS name for {a}:",
+                 f"{dns_label(a)}.{r.base_domain} at its alias address there. Names of the other regions' hosts",
+                 "are updated the same way; Headscale reloads them by itself."],
+                [Action(self.control, "list nodes on each control host, write its extra records file",
+                        names.write([{"name": "<name>.<suffix>", "type": "A", "value": "<alias address>"}]),
+                        "control", True)],
+                rollback_note="none separate: the names are updated again after a rollback",
+                run=lambda: names.Names(self.site, self.runner, self.out).sync(),
+                brief="Update the cross-region names", undo_brief="updated after rollback",
+            ),
+            Step(
+                7, "Verify",
                 [f"On {a}: tailscaled is Running with an address in {r.ipv4_prefix}, tags {', '.join(self.tags)},",
                  f"and prefers DERP region {r.derp_region_id}. On {self.control}: exactly one node named "
                  f"{dns_label(a)}. Read-only."],

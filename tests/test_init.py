@@ -46,34 +46,35 @@ resolver=192.0.2.53
 PROBE = "uid=1000\nroot=sudo\nos=Ubuntu 24.04 LTS\narch=x86_64\nsystemd=yes\ntool=bash\ntool=curl\ntool=python3\n"
 
 ANSWERS = [
-    "example", "",                                  # site name, owner user (default)
-    "cn", "cn-edge", "cn-probe", "n", "100.64.10.0/24", "",   # region 1; any port can be opened
-    "ovs", "ovs-edge", "ovs-probe", "y", "", "20000-20002",   # region 2; free /24; three ports pass
+    "example", "", "",                              # site name, owner user, DNS suffix (defaults)
+    "cn", "cn-edge", "cn-probe", "n", "100.64.10.0/24", "cn-extra", "",  # region 1; one more machine; any port
+    "ovs", "ovs-edge", "ovs-probe", "y", "", "", "20000-20002",          # region 2; free /24; three ports pass
     "",                                             # no more regions
     "l1", "cn-edge", "ovs-edge", "203.0.113.30", "", "11011",  # line 1: one-way by default, tunnel port
     "",                                             # no more lines
 ]
 
 EXPECTED = {
-    "site": {"name": "example", "owner_user": "owner"},
+    "site": {"name": "example", "owner_user": "owner", "dns_suffix": "tailnet.internal"},
     "regions": {
         "cn": {
             "control_host": "cn-edge", "check_from": "cn-probe",
             "public_ipv4": "198.51.100.10", "listen_ipv4": "0.0.0.0", "port": 9443, "stun_port": 3478,
             "ipv4_prefix": "100.64.10.0/24", "avoid_prefixes": ["100.80.0.0/16"],
-            "base_domain": "cn.tailnet.internal", "derp_region_id": 901, "derp_region_code": "cn",
+            "derp_region_id": 901, "derp_region_code": "cn",
             "derp_region_name": "CN cn-edge", "official_derp": False, "tags": ["tag:cn-server", "tag:cn-gateway"],
         },
         "ovs": {
             "control_host": "ovs-edge", "check_from": "ovs-probe",
             "public_ipv4": "203.0.113.20", "listen_ipv4": "203.0.113.20", "port": 20000, "stun_port": 20001,
             "ipv4_prefix": "100.64.1.0/24", "avoid_prefixes": [],
-            "base_domain": "ovs.tailnet.internal", "derp_region_id": 902, "derp_region_code": "ovs",
+            "derp_region_id": 902, "derp_region_code": "ovs",
             "derp_region_name": "OVS ovs-edge", "official_derp": True, "tags": ["tag:ovs-server", "tag:ovs-border"],
         },
     },
     "hosts": {
         "cn-edge": {"netfilter_mode": "off"},
+        "cn-extra": {"region": "cn"},
         "ovs-edge": {"tailscale_port": 20002},
     },
     "lines": [{
@@ -154,7 +155,7 @@ class InitTest(unittest.TestCase):
         self.assertIn('[hosts.cn-edge] gets netfilter_mode = "off"', joined)
         self.assertIn("ovs-probe: python3 is missing", "\n".join(notes + init.checker_problems(
             "ovs-probe", init.parse_facts(PROBE.replace("tool=python3\n", "")))))
-        sitemod.parse(data, known_host=lambda h: False)
+        sitemod.parse(data, known_host=lambda h: h == "cn-extra")
 
     def test_busy_ports_move_and_are_recorded(self):
         busy = CN_EDGE + "listen=tcp 0.0.0.0:9443\nlisten=udp 0.0.0.0:3478\nlisten=tcp 127.0.0.1:9090\n"

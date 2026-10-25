@@ -152,6 +152,30 @@ def cmd_line_list(args):
     return 0
 
 
+def cmd_dns(args):
+    from .names import Names
+    site = load_site(args)
+    redact = Redactor(site) if args.redact else identity
+    names = Names(site, remote.SSHRunner(out=lambda s: print(redact(s))), out=lambda s: print(redact(s)))
+    if args.action == "list":
+        rows = [("Region", "Name", "Address", "How")] + names.table()
+        rows = [tuple(redact(c) for c in r) for r in rows]
+        widths = [max(len(r[i]) for r in rows) for i in range(4)]
+        for r in rows:
+            print("  " + "  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
+        print("\nShort names work too on devices that use MagicDNS: ping <name>")
+        return 0
+    _nodes, planned = names.plan()
+    for region, (recs, skipped) in planned.items():
+        print(redact(f"  {region}: {len(recs)} name(s) of other regions' hosts" +
+                     (f"; skipped {', '.join(skipped)}" if skipped else "")))
+    if not args.yes and input("Type yes to write them to each Headscale: ").strip() != "yes":
+        print("Nothing written.")
+        return 1
+    names.sync()
+    return 0
+
+
 def run_checked(args, kind, name, make):
     """plan (with read-only checks unless --offline), apply, verify and rollback for join and line."""
     site = load_site(args)
@@ -333,6 +357,14 @@ def build_parser():
         if action in ("apply", "rollback"):
             c.add_argument("--yes", action="store_true", help="do not ask")
         c.set_defaults(func=cmd_line)
+
+    p = sub.add_parser("dns", help="names across regions")
+    s = p.add_subparsers(dest="action", required=True)
+    c = s.add_parser("list", parents=[common], help="every name as each region resolves it (read-only)")
+    c.set_defaults(func=cmd_dns)
+    c = s.add_parser("sync", parents=[common], help="write each region's names of other regions' hosts; asks for yes")
+    c.add_argument("--yes", action="store_true", help="do not ask")
+    c.set_defaults(func=cmd_dns)
 
     p = sub.add_parser("status", parents=[common], help="list the nodes of a region (read-only)")
     p.add_argument("region")

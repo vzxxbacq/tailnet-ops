@@ -89,9 +89,9 @@ class JoinPlanTest(TempDirTest):
 
     def test_plan(self):
         text, digest = join.Join(self.site, "ovs-control", ops=FakeOps()).plan_text()
-        for n, title in enumerate(["Preflight", "Binaries", "Site CA", "tailscaled", "Join", "Verify"], 1):
-            self.assertIn(f"Step {n}/6  {title}", text)
-        self.assertEqual(text.count("  Rollback"), 6)
+        for n, title in enumerate(["Preflight", "Binaries", "Site CA", "tailscaled", "Join", "Names", "Verify"], 1):
+            self.assertIn(f"Step {n}/7  {title}", text)
+        self.assertEqual(text.count("  Rollback"), 7)
         self.assertIn("runs the rollbacks of steps 5, 4, 3, 2 in that order", text)
         self.assertIn("--port=41641 --no-logs-no-support", text)
         self.assertIn("--login-server=https://203.0.113.20:9443 --auth-key=file:/dev/stdin --hostname=ovs-control", text)
@@ -191,6 +191,7 @@ class JoinApplyTest(TempDirTest):
                 for marker, name in (("pass \"/dev/net/tun\"", "preflight"),
                                      ("mktemp -d /tmp/tn-tailscale.", "stage"), ("install -o root -g root", "install"),
                                      ("update-ca-certificates", "ca"), ("systemctl enable --now tailscaled", "service"),
+                                     ("extra-records.json.tn-new", "names"),
                                      (join.NETCHECK_JSON, "netcheck"), (join.STATUS_JSON, "status"),
                                      (join.NODES_JSON, "nodes")):
                     if marker in script:
@@ -206,6 +207,10 @@ class JoinApplyTest(TempDirTest):
             ("service", "cn-probe", True),
             ("status", "cn-probe", True),
             ("pipe", "cn-control", "cn-probe"),
+            ("nodes", "cn-control", True),   # step 6 reads every region's nodes
+            ("nodes", "ovs-control", True),
+            ("names", "cn-control", True),   # and writes each region's names of the others' hosts
+            ("names", "ovs-control", True),
             ("status", "cn-probe", True),
             ("netcheck", "cn-probe", True),
             ("nodes", "cn-control", True),

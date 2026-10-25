@@ -5,6 +5,7 @@
 [site]
 name = "example"
 owner_user = "owner"               # Headscale user that owns the tags and personal devices
+dns_suffix = "tailnet.internal"    # every host is <name>.<suffix> in every region; short names work too
 
 [regions.cn]                       # one tailnet per region
 control_host = "cn-control"        # SSH alias of the machine that runs Headscale
@@ -15,7 +16,6 @@ port = 9443
 stun_port = 3478
 ipv4_prefix = "100.64.1.0/24"      # one /24 per tailnet, inside 100.64.0.0/10; it appears across a line as 10.255.1.0/24
 avoid_prefixes = []                # e.g. provider DNS inside 100.64.0.0/10
-base_domain = "cn.tailnet.internal"
 derp_region_id = 901
 derp_region_code = "cn"
 derp_region_name = "CN control"
@@ -31,7 +31,6 @@ port = 9443
 stun_port = 3478
 ipv4_prefix = "100.64.2.0/24"
 avoid_prefixes = []
-base_domain = "ovs.tailnet.internal"
 derp_region_id = 902
 derp_region_code = "ovs"
 derp_region_name = "OVS control"

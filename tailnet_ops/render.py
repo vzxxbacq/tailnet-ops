@@ -9,6 +9,8 @@ ETC = "/etc/headscale"
 LIB = "/var/lib/headscale"
 UNIT = "/etc/systemd/system/headscale.service"
 SOCKET = "/var/run/headscale/headscale.sock"
+# Names of other regions' hosts, kept by tailnet-ops; Headscale reloads it when it changes.
+EXTRA_RECORDS = f"{ETC}/extra-records.json"
 
 
 def marker(region):
@@ -86,7 +88,7 @@ def headscale_config(site, region):
             "override_local_dns": False,
             "nameservers": {"global": [], "split": {}},
             "search_domains": [],
-            "extra_records": [],
+            "extra_records_path": EXTRA_RECORDS,
         },
         "unix_socket": SOCKET,
         "unix_socket_permission": "0770",

@@ -158,7 +158,7 @@ class LinePlanTest(TempDirTest):
     def test_plan(self):
         job = linemod.Line(self.site, "line1")
         text, digest = job.plan_text()
-        self.assertEqual(text.count("  Rollback"), 6)
+        self.assertEqual(text.count("  Rollback"), 7)
         self.assertIn("runs the rollbacks of steps 5, 4, 3, 2 in that order", text)
         self.assertEqual(digest, linemod.Line(self.site, "line1").plan_id())
         summary = job.summary_text()
@@ -277,7 +277,9 @@ class LineScriptsTest(TempDirTest):
         for step in job.steps():
             for action in step.actions:
                 if action.body:
-                    bodies.append(scripts.wrap(job.preludes_by_side[action.prelude], action.body))
+                    prelude = (job.control_preludes["initiator"] if action.prelude == "control"
+                               else job.preludes_by_side[action.prelude])
+                    bodies.append(scripts.wrap(prelude, action.body))
             if step.rollback and step.undo is None:  # a custom undo runs from this machine, not as this script
                 bodies.append(scripts.wrap(job.preludes_by_side["initiator"], step.rollback))
         bodies.append(scripts.wrap(job.preludes_by_side["responder"], linemod.LEFTOVERS))

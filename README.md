@@ -35,6 +35,8 @@
 | `./tn line apply <line>` | 拉通两个 tailnet：WireGuard 隧道、地址映射和 NAT、给挡路的防火墙链加带标记的放行规则、宣告并批准路由、更新策略，最后逐台 ping 对方区的机器。要输入 `yes` |
 | `./tn line verify <line>` | 只读：两端互相 ping 隧道地址，再 ping 对方区每台已入网机器的映射地址 |
 | `./tn line rollback <line>` | 撤回路由和策略，停掉隧道，删掉 NAT 表、放行规则、定时器和文件，最后检查有无残留。要输入 `yes` |
+| `./tn dns list` | 只读：列出每个区里每个名字解析到的地址（本区直连地址，或经专线的映射地址） |
+| `./tn dns sync` | 把各区看得到的对方机器名字写进各自的 Headscale，要输入 `yes`；入网和拉专线时会自动做 |
 | `./tn status <region>` | 列出节点 |
 | `make check` | 离线测试，加上对工作区和全部历史的隐私检查 |
 

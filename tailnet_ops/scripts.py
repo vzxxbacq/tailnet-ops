@@ -334,6 +334,12 @@ if [ ! -e "$ETC/policy.hujson" ]; then
 {render.BOOTSTRAP_POLICY.rstrip()}
 TN_EOF
 fi
+if [ ! -e "$ETC/extra-records.json" ]; then
+  # Headscale needs the file to exist; tailnet-ops fills it with the names of other regions' hosts.
+  put 0640 root:headscale "$ETC/extra-records.json" <<'TN_EOF'
+[]
+TN_EOF
+fi
 if [ -e "$UNIT" ] && ! ours_unit; then die "$UNIT exists and is not ours"; fi
 put 0644 root:root "$UNIT" <<'TN_EOF'
 {unit.rstrip()}
@@ -353,8 +359,8 @@ elif ours_unit; then
   echo "removed $UNIT"
 else echo "skip: $UNIT is not ours"; fi
 if ours_etc; then
-  rm -f "$ETC/config.yaml" "$ETC/policy.hujson" "$ETC/.restart-needed"
-  echo "removed $ETC/config.yaml and $ETC/policy.hujson"
+  rm -f "$ETC/config.yaml" "$ETC/policy.hujson" "$ETC/extra-records.json" "$ETC/.restart-needed"
+  echo "removed $ETC/config.yaml, $ETC/policy.hujson and $ETC/extra-records.json"
 fi
 """
 
