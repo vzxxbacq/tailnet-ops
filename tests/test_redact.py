@@ -29,6 +29,11 @@ class RedactTest(TempDirTest):
         r = Redactor(extra_hosts={"edge": "<edge>"})
         self.assertEqual(r("tag:cn-edge and edge1 stay; ssh edge."), "tag:cn-edge and edge1 stay; ssh <edge>.")
 
+    def test_names_in_site_keys(self):
+        r = Redactor(extra_hosts={"edge": "<edge>", "zip": "<zip>"})
+        self.assertEqual(r("[hosts.edge] region; lines.edge.port; x.zip stays"),
+                         "[hosts.<edge>] region; lines.<edge>.port; x.zip stays")
+
     def test_hosts_only_in_host_settings(self):
         site = self.load_site(EXAMPLE_WITH_EXTRA_HOST, name="extra")
         self.assertRegex(Redactor(site)("ssh far-edge"), r"^ssh <host\d+>$")
