@@ -128,7 +128,6 @@ class AskTest(TempDirTest):
                                "name": "owners-mac"})
         self.assertEqual(ui.asked, ["Which Tailscale?", "Which OS?", "Which machine?", "How does it join?",
                                     "Which region first?", "Its name in the tailnet"])
-        self.assertIn("A personal device joins every region at once (cn, ovs)", ui.notes[0])
 
     def test_the_os_decides_whether_this_machine_is_offered(self):
         got, ui = self.ask({"Which OS?": "macos", "Which machine?": "box"}, this_os="linux")

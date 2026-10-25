@@ -267,7 +267,8 @@ class AppJoin(Procedure):
                  brief="Write the Clash Verge script", undo_brief="delete the file"),
         ]
         if self.here:
-            steps.insert(1, Step(0, "Tailscale app",
+            # After the profile, so the app reads its settings when it first starts.
+            steps.insert(2, Step(0, "Tailscale app",
                                  [f"Unless the app is in {apple.APP}: download Tailscale {pins.TAILSCALE_APP_VERSION}, the "
                                   "official package, check its pinned sha256",
                                   "and that Tailscale Inc. signed it, install it with sudo. Open the app and wait until "

@@ -61,6 +61,7 @@ def profile(site, name, label, ca_pem):
         "UseTailscaleSubnets": "always",
         "UseTailscaleDNSSettings": "always",
         "TailscaleStartOnLogin": True,
+        "AppIntroShown": True,                   # no welcome window: tn logs the accounts in
         "ManagedByOrganizationName": f"tailnet-ops {site.name}",
         "ManagedByCaption": f"Servers: {where}. Switch region in the account menu.",
     }
@@ -104,7 +105,8 @@ def app_lines():
         '  "$T" status --json >/dev/null 2>&1 && break',
         '  if [ "$asked" = no ]; then',
         '    echo "When macOS asks, allow Tailscale\'s system extension (System Settings → General → Login Items &'
-        ' Extensions) and its VPN configuration. Waiting up to 5 minutes."',
+        ' Extensions) and its VPN configuration. Skip the app\'s own Log in: tn adds the accounts. Waiting up to'
+        ' 5 minutes."',
         "    asked=yes",
         "  fi",
         "  sleep 2",

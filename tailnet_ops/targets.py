@@ -185,8 +185,6 @@ def _index(options, value):
 def ask_first_region(site, ui, default=None):
     """A personal device joins every region at once; this only picks the one it uses first."""
     names = list(site.regions)
-    ui.note(f"A personal device joins every region at once ({', '.join(names)}), one account each. "
-            "Pick the one it uses first; switch any time in the Tailscale menu.")
     options = [(n, n, "first; " + ", ".join(o for o in names if o != n) + " joined too") for n in names]
     return ui.select("Which region first?", options, default=_index(options, default))
 
