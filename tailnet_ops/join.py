@@ -2,7 +2,7 @@
 
 A server joins its region with a tagged key. A personal device joins every region as the
 owner, one Tailscale profile per region, and switches between them with `tailscale switch`.
-Linux hosts get a pinned static Tailscale build under systemd; macOS hosts get Homebrew's
+Linux hosts get a pinned static Tailscale build under systemd or OpenRC; macOS hosts get Homebrew's
 tailscale under launchd (see macos.py).
 """
 
@@ -21,6 +21,8 @@ from .site import dns_label, ensure_private_dir, write_private
 TS_BIN = "/usr/local/bin/tailscale"
 TSD_BIN = "/usr/local/sbin/tailscaled"
 TS_UNIT = "/etc/systemd/system/tailscaled.service"
+TS_INIT = "/etc/init.d/tailscaled"            # OpenRC (Alpine)
+ALPINE_PACKAGES = "bash curl ca-certificates iproute2 tar iptables"
 TS_STATE = "/var/lib/tailscale"
 TS_CACHE = "/var/cache/tailscale"
 CA_DIR = "/usr/local/share/ca-certificates"
@@ -54,6 +56,8 @@ umask 022
     ("TS_BIN", TS_BIN),
     ("TSD_BIN", TSD_BIN),
     ("TS_UNIT", TS_UNIT),
+    ("TS_INIT", TS_INIT),
+    ("ALPINE_PACKAGES", ALPINE_PACKAGES),
     ("TS_STATE", TS_STATE),
     ("TS_CACHE", TS_CACHE),
     ("CA_FILE", ca_file(site)),
@@ -82,6 +86,8 @@ ours_bin() {{
   return 1
 }}
 ours_unit() {{ [ -f "$TS_UNIT" ] && [ "$(head -n 1 "$TS_UNIT")" = "# $MARK" ]; }}
+ours_init() {{ [ -f "$TS_INIT" ] && [ "$(sed -n 2p "$TS_INIT")" = "# $MARK" ]; }}
+ours_service() {{ ours_unit || ours_init; }}
 ours_state() {{ [ -f "$TS_STATE/.tailnet-ops" ] && [ "$(cat "$TS_STATE/.tailnet-ops")" = "$MARK" ]; }}"""
 
 
@@ -93,6 +99,7 @@ def preflight(ca_pem):
 fail=0
 pass() { printf '  ok    %s\n' "$*"; }
 flag() { printf '  FAIL  %s\n' "$*"; fail=1; }
+note() { printf '  note  %s\n' "$*"; }
 
 os=$( (. /etc/os-release && echo "$PRETTY_NAME") 2>/dev/null || echo unknown)
 if [ "$(uname -s)" = Linux ]; then pass "OS: $os"; else flag "OS: not Linux ($(uname -s)); join it with --os macos"; fi
@@ -106,17 +113,25 @@ if [ -n "$arch" ]; then pass "arch: $(uname -m)"; else flag "arch: $(uname -m) h
 echo "TN-FACT arch=${arch:-none}"
 echo "TN-FACT machine=$(uname -m)"
 if [ "$(id -u)" = 0 ]; then pass "running as root"; else flag "not running as root"; fi
-if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then pass "systemd"; else flag "systemd is not running"; fi
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then pass "systemd"; init=systemd
+elif command -v openrc-run >/dev/null && command -v rc-service >/dev/null; then pass "OpenRC"; init=openrc
+else flag "neither systemd nor OpenRC runs here"; init=none; fi
+echo "TN-FACT init=$init"
 if [ -c /dev/net/tun ]; then pass "/dev/net/tun"; else flag "/dev/net/tun is missing"; fi
 missing=""
 for c in curl sha256sum tar install update-ca-certificates ip ss; do
   command -v "$c" >/dev/null || missing="$missing $c"
 done
-if [ -z "$missing" ]; then pass "tools: curl sha256sum tar install update-ca-certificates ip ss"; else flag "missing tools:$missing"; fi
+if [ -z "$missing" ]; then pass "tools: curl sha256sum tar install update-ca-certificates ip ss"
+elif [ -f /etc/alpine-release ]; then flag "missing tools:$missing; on Alpine: apk add $ALPINE_PACKAGES"
+else flag "missing tools:$missing"; fi
+if ! command -v iptables >/dev/null && ! command -v nft >/dev/null; then
+  note "neither iptables nor nft is installed; tailscaled sets firewall rules by default: install iptables, or join with --netfilter off"
+fi
 
 lines=$(ss -H -lunp "sport = :$TS_PORT" 2>/dev/null || true)
 if [ -z "$lines" ]; then pass "udp/$TS_PORT free (Tailscale)"; echo "TN-FACT port=free"
-elif ! printf '%s\n' "$lines" | grep -qv '"tailscaled"' && ours_unit; then
+elif ! printf '%s\n' "$lines" | grep -qv '"tailscaled"' && ours_service; then
   pass "udp/$TS_PORT already used by our tailscaled"; echo "TN-FACT port=ours"
 else flag "udp/$TS_PORT is in use: $(printf '%s' "$lines" | tr -s ' ' | tr '\n' ' ' | cut -c1-160)"; echo "TN-FACT port=busy"; fi
 
@@ -136,11 +151,14 @@ echo "TN-FACT tailscaled=$( [ -f "$TSD_BIN" ] && sha256sum "$TSD_BIN" | cut -d' 
 if [ ! -e "$TS_UNIT" ]; then pass "$TS_UNIT absent"
 elif ours_unit; then pass "$TS_UNIT exists and is ours"
 else flag "$TS_UNIT exists and is not ours"; fi
+if [ ! -e "$TS_INIT" ]; then pass "$TS_INIT absent"
+elif ours_init; then pass "$TS_INIT exists and is ours"
+else flag "$TS_INIT exists and is not ours"; fi
 if [ ! -e "$TS_STATE" ]; then pass "$TS_STATE absent"
 elif ours_state; then pass "$TS_STATE exists and is ours"
 else flag "$TS_STATE exists and is not ours"; fi
-if ip link show tailscale0 >/dev/null 2>&1 && ! ours_unit; then flag "a tailscale0 interface exists outside our unit"; fi
-if pgrep -x tailscaled >/dev/null && ! ours_unit; then flag "a tailscaled process runs outside our unit"; fi
+if ip link show tailscale0 >/dev/null 2>&1 && ! ours_service; then flag "a tailscale0 interface exists outside our service"; fi
+if pgrep -x tailscaled >/dev/null && ! ours_service; then flag "a tailscaled process runs outside our service"; fi
 
 login=ok
 for url in $LOGINS; do
@@ -151,7 +169,7 @@ for url in $LOGINS; do
   fi
 done
 echo "TN-FACT login=$login"
-if ours_unit; then echo "TN-FACT joined=ours"; else echo "TN-FACT joined=no"; fi
+if ours_service; then echo "TN-FACT joined=ours"; else echo "TN-FACT joined=no"; fi
 # Only when programs ask systemd-resolved's stub (127.0.0.53) does accept-dns hand just the tailnet
 # suffix to MagicDNS. Where /etc/resolv.conf names upstream servers directly, programs bypass
 # resolved, and tailscaled may rewrite the file, so tailnet-ops leaves DNS alone there.
@@ -190,7 +208,10 @@ if [ "$got" != "$want" ]; then
   rm -rf "$stage"
   die "the download does not match its pinned sha256: $got"
 fi
-tar -xzf "$stage/tailscale.tgz" -C "$stage" --strip-components=1 "$folder/tailscale" "$folder/tailscaled"
+# Plain tar options only, so busybox's tar (Alpine) does as well as GNU tar.
+tar -xzf "$stage/tailscale.tgz" -C "$stage" "$folder/tailscale" "$folder/tailscaled"
+mv "$stage/$folder/tailscale" "$stage/$folder/tailscaled" "$stage/"
+rmdir "$stage/$folder"
 rm -f "$stage/tailscale.tgz"
 echo "archive sha256 ok"
 echo "TN-FACT download=ok"
@@ -225,8 +246,9 @@ done
 """
 
 # Read-only: everything join can leave on a host, one `TN-LEFT` line per item still there.
-LEFTOVERS = r"""for p in "$TS_BIN" "$TSD_BIN" "$TS_UNIT" "$TS_STATE" "$TS_CACHE" "$CA_FILE" /run/tailscale \
-         /etc/systemd/system/multi-user.target.wants/tailscaled.service /tmp/tn-tailscale.*; do
+LEFTOVERS = r"""for p in "$TS_BIN" "$TSD_BIN" "$TS_UNIT" "$TS_INIT" "$TS_STATE" "$TS_CACHE" "$CA_FILE" /run/tailscale \
+         /etc/systemd/system/multi-user.target.wants/tailscaled.service /etc/runlevels/default/tailscaled \
+         /tmp/tn-tailscale.*; do
   if [ -e "$p" ]; then echo "TN-LEFT $p"; fi
 done
 if ip link show tailscale0 >/dev/null 2>&1; then echo "TN-LEFT interface tailscale0"; fi
@@ -264,7 +286,7 @@ def rollback_ca(ca_pem):
 if [ ! -e "$CA_FILE" ]; then echo "$CA_FILE: absent"
 elif cmp -s "$CA_FILE" <(ca); then
   rm -f "$CA_FILE"
-  update-ca-certificates --fresh >/dev/null
+  update-ca-certificates --fresh >/dev/null 2>&1 || update-ca-certificates >/dev/null 2>&1
   echo "removed $CA_FILE and rebuilt the trust store"
 else echo "skip: $CA_FILE is not this site's CA"; fi
 """
@@ -324,13 +346,83 @@ die "tailscaled did not answer within 20 s"
 """
 
 
-ROLLBACK_SERVICE = r"""if [ ! -e "$TS_UNIT" ]; then echo "$TS_UNIT: absent"
-elif ours_unit; then
-  systemctl disable --now tailscaled
-  rm -f "$TS_UNIT"
-  systemctl daemon-reload
-  echo "stopped tailscaled (it cleans up its routes and rules on stop) and removed $TS_UNIT"
-else echo "skip: $TS_UNIT is not ours"; fi
+def openrc_script(mark, tailnets, port):
+    """An OpenRC service, supervised: it starts at boot and is restarted if it dies."""
+    return f"""#!/sbin/openrc-run
+# {mark}
+description="Tailscale node agent for tailnet {tailnets} (tailnet-ops)"
+supervisor=supervise-daemon
+command={TSD_BIN}
+command_args="--state={TS_STATE}/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port={port} --no-logs-no-support"
+output_logger="logger -t tailscaled -p daemon.info"
+error_logger="logger -t tailscaled -p daemon.err"
+respawn_delay=5
+respawn_max=0
+
+depend() {{
+	need net
+	after firewall
+	use logger
+}}
+
+start_pre() {{
+	checkpath --directory --mode 0755 /run/tailscale
+	checkpath --directory --mode 0700 {TS_STATE}
+	checkpath --directory --mode 0750 {TS_CACHE}
+}}
+
+stop_post() {{
+	{TSD_BIN} --cleanup
+}}
+"""
+
+
+def openrc_service(script_text):
+    return f"""if [ -e "$TS_INIT" ] && ! ours_init; then die "$TS_INIT exists and is not ours"; fi
+if [ -e "$TS_STATE" ] && ! ours_state; then die "$TS_STATE exists and is not ours"; fi
+install -d -m 0700 "$TS_STATE"
+printf '%s\\n' "$MARK" > "$TS_STATE/.tailnet-ops"
+changed=no
+cat > "$TS_INIT.tn-new" <<'TN_EOF'
+{script_text.rstrip()}
+TN_EOF
+chmod 0755 "$TS_INIT.tn-new"
+if cmp -s "$TS_INIT.tn-new" "$TS_INIT"; then rm -f "$TS_INIT.tn-new"; echo "unchanged $TS_INIT"
+else mv -f "$TS_INIT.tn-new" "$TS_INIT"; echo "wrote $TS_INIT"; changed=yes; fi
+rc-update add tailscaled default >/dev/null
+if rc-service tailscaled status >/dev/null 2>&1; then
+  if [ "$changed" = yes ]; then rc-service tailscaled restart; echo "restarted tailscaled"; fi
+else
+  rc-service tailscaled start
+fi
+for _ in $(seq 1 20); do
+  if "$TS_BIN" status --json >/dev/null 2>&1; then echo "tailscaled is up"; return 0; fi
+  sleep 1
+done
+(grep tailscaled /var/log/messages 2>/dev/null | tail -n 30) || true
+die "tailscaled did not answer within 20 s"
+"""
+
+
+# Either init system: a rollback may run without knowing which one the host has.
+ROLLBACK_SERVICE = r"""gone=yes
+if [ -e "$TS_UNIT" ]; then
+  if ours_unit; then
+    systemctl disable --now tailscaled
+    rm -f "$TS_UNIT"
+    systemctl daemon-reload
+    echo "stopped tailscaled (it cleans up its routes and rules on stop) and removed $TS_UNIT"
+  else echo "skip: $TS_UNIT is not ours"; gone=no; fi
+fi
+if [ -e "$TS_INIT" ]; then
+  if ours_init; then
+    rc-service tailscaled stop || true
+    rc-update del tailscaled default >/dev/null 2>&1 || true
+    rm -f "$TS_INIT"
+    echo "stopped tailscaled (it cleans up its routes and rules on stop) and removed $TS_INIT"
+  else echo "skip: $TS_INIT is not ours"; gone=no; fi
+fi
+if [ "$gone" = yes ] && [ ! -e "$TS_UNIT" ] && [ ! -e "$TS_INIT" ]; then echo "tailscaled service: none left"; fi
 if [ ! -e "$TS_STATE" ]; then echo "$TS_STATE: absent"
 elif ours_state; then rm -rf "$TS_STATE" "$TS_CACHE"; echo "removed $TS_STATE (the node key) and $TS_CACHE"
 else echo "skip: $TS_STATE is not ours"; fi
@@ -605,7 +697,10 @@ class Join(Procedure):
             last = result.output.strip().splitlines()[-1:] or ["no answer"]
             how = "run as root on this machine (sudo)" if self.local else "log in over SSH as root"
             fails = [f"cannot {how}: {last[0]}"]
-        return {"facts": result.facts(), "fails": fails, "codes": [r.name for r in self.unreachable()]}
+        notes = [line.split("note", 1)[1].strip() for line in result.output.splitlines()
+                 if line.lstrip().startswith("note ")]
+        return {"facts": result.facts(), "fails": fails, "notes": notes,
+                "codes": [r.name for r in self.unreachable()]}
 
     def _dns_text(self):
         if self.dns_setting is not None:
@@ -669,10 +764,18 @@ class Join(Procedure):
     def _rollback_ca(self, ca):
         return macos.rollback_ca(ca) if self.macos else rollback_ca(ca)
 
+    @property
+    def openrc(self):
+        """The host runs OpenRC (Alpine), as preflight found; else systemd."""
+        return not self.macos and self.facts.get("init") == "openrc"
+
     def _service(self):
         if self.macos:
             return macos.SERVICE
-        return service(unit(self.mark, ", ".join(r.name for r in self.regions), self.port))
+        tailnets = ", ".join(r.name for r in self.regions)
+        if self.openrc:
+            return openrc_service(openrc_script(self.mark, tailnets, self.port))
+        return service(unit(self.mark, tailnets, self.port))
 
     def _run_ca(self):
         self._host(self._install_ca(self._ca()))
@@ -990,7 +1093,7 @@ class Join(Procedure):
         return [
             Step(
                 1, "Preflight",
-                ["Check arch, OS, root, systemd, /dev/net/tun and tools; that udp/"
+                ["Check arch, OS, root, systemd or OpenRC, /dev/net/tun and tools; that udp/"
                  f"{self.port} is free; that no other Tailscale is installed;",
                  f"that {a} reaches {logins} over TLS with the site CA. Changes nothing."],
                 [Action(a, "read-only checks", preflight(CA_PLACEHOLDER), "host", True)],
@@ -1026,13 +1129,17 @@ class Join(Procedure):
             ),
             Step(
                 4, "tailscaled",
-                [f"Write {TS_UNIT} (port udp/{self.port}, --no-logs-no-support), mark {TS_STATE},",
-                 "systemctl enable --now tailscaled (it starts at boot and restarts on failure), wait until it answers."],
-                [Action(a, "write the unit and start", self._service(), "host", True)],
+                ([f"Write {TS_INIT}, an OpenRC service under supervise-daemon (port udp/{self.port},",
+                  f"--no-logs-no-support), mark {TS_STATE}; rc-update add tailscaled default and start it",
+                  "(it starts at boot and is restarted if it dies), wait until it answers."] if self.openrc else
+                 [f"Write {TS_UNIT} (port udp/{self.port}, --no-logs-no-support), mark {TS_STATE},",
+                  "systemctl enable --now tailscaled (it starts at boot and restarts on failure), wait until it "
+                  "answers."]),
+                [Action(a, "write the service and start", self._service(), "host", True)],
                 rollback=ROLLBACK_SERVICE,
-                rollback_note=f"stop and disable tailscaled, remove the unit, {TS_STATE} and {TS_CACHE}",
+                rollback_note=f"stop and disable tailscaled, remove its service, {TS_STATE} and {TS_CACHE}",
                 run=self._run_service, brief="Start tailscaled, at boot too",
-                undo_brief="stop it, remove the unit and state",
+                undo_brief="stop it, remove the service and state",
             ),
         ]
 
@@ -1133,12 +1240,13 @@ class Join(Procedure):
     # --- printing ---------------------------------------------------------------------
 
     def _starter(self):
-        return "launchd" if self.macos else "systemd"
+        return "launchd" if self.macos else ("OpenRC" if self.openrc else "systemd")
 
     def _adds(self):
         if self.macos:
             return f"Homebrew's tailscale (unless there), {macos.PLIST}, {macos.TS_STATE}, the site CA in the keychain"
-        return f"tailscale, tailscaled, tailscaled.service, {TS_STATE}, the site CA"
+        service = TS_INIT if self.openrc else "tailscaled.service"
+        return f"tailscale, tailscaled, {service}, {TS_STATE}, the site CA"
 
     def _who(self):
         """The first lines of the summary: where the host goes and as whom."""
@@ -1186,6 +1294,8 @@ class Join(Procedure):
                        "to make a link code elsewhere, then asks you to paste it")
         if self.ca_from:
             out.append(f"  site CA       from {self.ca_from}: it authenticates every login server; a copy goes to pki/")
+        for n in (checks or {}).get("notes", []):
+            out.append(f"  note          {n}")
         if self.macos and facts.get("ca") == "no":
             out.append("  site CA       not trusted yet: macOS asks for your password or Touch ID in step 3")
         out += [f"  adds          {self._adds()}", "  leaves alone  everything else"]

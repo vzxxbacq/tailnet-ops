@@ -109,6 +109,16 @@ class JoinPlanTest(TempDirTest):
         self.assertIn("✓ port free", text)
         self.assertIn("host          Ubuntu 24.04 LTS, x86_64", text)
 
+    def test_check_shows_notes(self):
+        out = ("TN-FACT os=Alpine Linux v3.23\nTN-FACT machine=x86_64\nTN-FACT init=openrc\nTN-FACT login=ok\n"
+               "  note  neither iptables nor nft is installed; tailscaled sets firewall rules by default\n")
+        job = join.Join(self.site, "cn-probe", runner=FakeRunner({"TN-FACT os=": out}), ops=FakeOps())
+        checks = job.check()
+        self.assertEqual(checks["fails"], [])
+        text = job.summary_text(checks)
+        self.assertIn("note          neither iptables nor nft is installed", text)
+        self.assertIn("a daemon that starts at boot (OpenRC)", text)
+
     def test_check_lists_failures(self):
         out = ("TN-FACT os=Ubuntu\nTN-FACT arch=amd64\nTN-FACT port=busy\nTN-FACT login=fail\n"
                "  FAIL  udp/41641 is in use: x\n  FAIL  cannot reach https://198.51.100.10:9443 with the site CA: y\n")
@@ -137,6 +147,16 @@ class JoinPlanTest(TempDirTest):
         self.assertEqual(checks["fails"], ["cannot log in over SSH as root: ssh: Could not resolve hostname cn-probe"])
         checks = join.Join(self.site, "cn-probe", runner=NoSSH(), ops=FakeOps(ca=None)).check()
         self.assertIn("no site CA here", checks["fails"][0])
+
+    def test_openrc_plan(self):
+        job = join.Join(self.site, "cn-probe", ops=FakeOps())
+        job.facts["init"] = "openrc"
+        text = job.plan_text()[0]
+        self.assertIn("/etc/init.d/tailscaled, an OpenRC service under supervise-daemon", text)
+        self.assertIn("rc-update add tailscaled default", text)
+        self.assertNotIn("systemctl enable", text.split("Step 4/7")[1].split("Rollback")[0])
+        self.assertIn("a daemon that starts at boot (OpenRC)", job.summary_text({"facts": {"init": "openrc"},
+                                                                                  "fails": []}))
 
     def test_host_settings(self):
         site = self.load_site(example_text(("tailscale_port = 41641", "tailscale_port = 20002")), name="b")
@@ -393,7 +413,7 @@ class JoinScriptsTest(TempDirTest):
                                    input=script, capture_output=True, text=True)
                 self.assertEqual(p.returncode, 0, p.stdout)
 
-    def sandbox(self, body):
+    def sandbox(self, body, stubs_extra=None):
         """Run a host script with its paths under a temp root and stub commands."""
         root = self.tmp / "root"
         root.mkdir(exist_ok=True)
@@ -404,11 +424,13 @@ class JoinScriptsTest(TempDirTest):
             "systemctl": 'echo "systemctl $*" >> "$STUB_LOG"; [ "$1" = is-active ] && exit 3; exit 0',
             "update-ca-certificates": 'echo "update-ca-certificates $*" >> "$STUB_LOG"',
             "sha256sum": 'exec shasum -a 256 "$@"',
+            **(stubs_extra or {}),
         }.items():
             (stubs / name).write_text(f"#!/bin/sh\n{text}\n")
             (stubs / name).chmod(0o755)
         prelude = self.job.prelude
         for var, real in (("TS_BIN", join.TS_BIN), ("TSD_BIN", join.TSD_BIN), ("TS_UNIT", join.TS_UNIT),
+                          ("TS_INIT", join.TS_INIT),
                           ("TS_STATE", join.TS_STATE), ("TS_CACHE", join.TS_CACHE),
                           ("CA_FILE", join.ca_file(self.site))):
             line = f"{var}={real}"
@@ -417,6 +439,58 @@ class JoinScriptsTest(TempDirTest):
         env = {**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}", "STUB_LOG": str(log)}
         p = run_bash(scripts.wrap(prelude, body), env=env)
         return p, root, (log.read_text() if log.exists() else "")
+
+    OPENRC = {
+        "rc-update": 'echo "rc-update $*" >> "$STUB_LOG"',
+        "rc-service": 'echo "rc-service $*" >> "$STUB_LOG"; case "$2" in status) [ -f "$STUB_RUNNING" ] ;; '
+                      'start|restart) touch "$STUB_RUNNING" ;; stop) rm -f "$STUB_RUNNING" ;; esac',
+        "openrc-run": "exit 0",
+        "seq": "echo 1",
+    }
+
+    def openrc_sandbox(self, body):
+        os.environ["STUB_RUNNING"] = str(self.tmp / "running")
+        try:
+            return self.sandbox(body, {**self.OPENRC, "tailscale": "exit 0"})
+        finally:
+            del os.environ["STUB_RUNNING"]
+
+    def test_preflight_finds_openrc(self):
+        p, _root, _log = self.sandbox(join.preflight(CA), {"openrc-run": "exit 0", "rc-service": "exit 0"})
+        if os.path.isdir("/run/systemd/system"):
+            self.skipTest("this machine runs systemd")
+        self.assertIn("ok    OpenRC", p.stdout)
+        self.assertIn("TN-FACT init=openrc", p.stdout)
+
+    def test_openrc_service_starts_once_and_at_boot(self):
+        self.job.facts["init"] = "openrc"
+        body = self.job._service().replace(f'"$TS_BIN" status', f'{self.tmp}/stubs/tailscale status')
+        p, root, log = self.openrc_sandbox(body)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        script = (root / "ts_init").read_text().splitlines()
+        self.assertEqual(script[0], "#!/sbin/openrc-run")
+        self.assertEqual(script[1], f"# {self.job.mark}")
+        self.assertIn("supervisor=supervise-daemon", script)
+        self.assertIn("rc-update add tailscaled default", log)
+        self.assertIn("rc-service tailscaled start", log)
+        self.assertIn("tailscaled is up", p.stdout)
+        p, root, log = self.openrc_sandbox(body)
+        self.assertIn("unchanged", p.stdout)
+        self.assertEqual(log.count("tailscaled start"), 1)
+        self.assertNotIn("restart", log)
+
+    def test_rollback_removes_only_our_openrc_service(self):
+        self.job.facts["init"] = "openrc"
+        script = join.openrc_script(self.job.mark, "ovs", 41641)
+        p, root, log = self.openrc_sandbox(f"cat > \"$TS_INIT\" <<'EOF'\n{script}EOF\n" + join.ROLLBACK_SERVICE)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertFalse((root / "ts_init").exists())
+        self.assertIn("rc-service tailscaled stop", log)
+        self.assertIn("rc-update del tailscaled default", log)
+        p, root, log = self.openrc_sandbox('printf "#!/sbin/openrc-run\\n# someone else\\n" > "$TS_INIT"\n'
+                                           + join.ROLLBACK_SERVICE)
+        self.assertIn("is not ours", p.stdout)
+        self.assertTrue((root / "ts_init").exists())
 
     def test_rollback_ca_only_removes_this_sites_ca(self):
         p, root, log = self.sandbox("printf 'other\\n' > \"$CA_FILE\"\n" + join.rollback_ca(CA))
