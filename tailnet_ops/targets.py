@@ -163,10 +163,9 @@ CLIENTS = [
     ("cli", "Command line", "the tailscaled daemon: starts at boot and keeps running; tn installs it"),
     ("app", "Tailscale app", "the app with its menu: you install it, tn sets it up"),
 ]
-SYSTEMS = {
-    "cli": [("linux", "Linux", "systemd, a pinned static build"), ("macos", "macOS", "Homebrew's tailscale, launchd")],
-    "app": [("macos", "macOS", "the standalone app from tailscale.com")],
-}
+# For the command line: asked only when the OS cannot be found (the app runs on macOS only).
+SYSTEMS = [("linux", "Linux", "systemd or OpenRC, a pinned static build"),
+           ("macos", "macOS", "Homebrew's tailscale, launchd")]
 
 
 def _choose(ui, title, options, default=0):
@@ -192,6 +191,18 @@ def ask_port(ui, default=None):
                        str(default or pins.DEFAULT_TAILSCALE_PORT), check=_check_port))
 
 
+def find_os(ui, host, detect_os=None):
+    """This machine's OS, or the host's from `uname` over SSH; asked only when that fails."""
+    found = this_os() if host is None else (detect_os(host) if detect_os else None)
+    labels = {v: label for v, label, _h in SYSTEMS}
+    if found in labels:
+        ui.chosen("OS", f"{labels[found]} (detected)")
+        return found
+    if host is not None and detect_os:
+        ui.note(f"could not reach {host} over SSH to see its OS")
+    return ui.select("Which OS?", SYSTEMS)
+
+
 def ask_first_region(site, ui, default=None):
     """A personal device joins every region at once; this only picks the one it uses first."""
     names = list(site.regions)
@@ -212,8 +223,9 @@ def ask_app(site, ui, given=None, default_name="air"):
 
 
 def ask(site, ui, ssh_aliases=(), host=None, given=None, pick=True, detect_os=None):
-    """Ask which Tailscale, which OS, which machine (unless pick is False: then it is host), how,
-    where and under which name, skipping what the command line already gave. Returns resolve()'s
+    """Ask which Tailscale, which machine (unless pick is False: then it is host), how, where and
+    under which name, skipping what the command line already gave. The OS is found, not asked: this
+    machine's own, or `uname` over SSH; only when that fails is it asked. Returns resolve()'s
     keyword arguments, plus "app" and "here" for the Tailscale app."""
     given = given or {}
     here = this_machine_name()
@@ -222,18 +234,14 @@ def ask(site, ui, ssh_aliases=(), host=None, given=None, pick=True, detect_os=No
     if pick:
         client = "app" if given.get("app") else ui.select("Which Tailscale?", CLIENTS,
                                                           default=1 if (here_rec or {}).get("app") else 0)
-        if os_name is None:
-            os_name = _choose(ui, "Which OS?", SYSTEMS[client], default=_index(SYSTEMS[client], this_os()))
         if client == "app":
             macs = ([("here", "This Mac", here_name or here)] if this_os() == "macos" else [])
             macs.append(("other", "Another Mac", "AirDrop a profile there and paste one block; no SSH"))
             where = _choose(ui, "Which Mac?", macs)
             default_name = (here_name or here) if where == "here" else "air"
             return {"host": None, "here": where == "here", **ask_app(site, ui, given, default_name)}
-        machines = []
-        if this_os() == os_name:
-            machines.append((None, "This machine", ", ".join(x for x in (here_name or here, _joined_hint(here_rec))
-                                                             if x)))
+        machines = [(None, "This machine", ", ".join(x for x in (here_name or here, this_os(), _joined_hint(here_rec))
+                                                      if x))]
         for alias in ssh_aliases:
             _n, rec = find_record(site, alias)
             machines.append((alias, alias, _site_role(site, alias) or _joined_hint(rec) or "over SSH"))
@@ -246,11 +254,15 @@ def ask(site, ui, ssh_aliases=(), host=None, given=None, pick=True, detect_os=No
     if rec_name is not None:
         host = rec.get("ssh")
     out = {"host": host}
-    if os_name:
-        out["os_name"] = os_name
     if host is not None and site.is_site_host(host):
         ui.note(f"{host} is the {_site_role(site, host)}: it joins {site.host_region(host).name} as a server.")
         return out
+    if os_name is None and rec.get("os") in dict((v, v) for v, _l, _h in SYSTEMS):
+        os_name = rec["os"]
+        ui.chosen("OS", f"{dict((v, label) for v, label, _h in SYSTEMS)[os_name]} (as joined before)")
+    if os_name is None:
+        os_name = find_os(ui, host, detect_os)
+    out["os_name"] = os_name
     role = given.get("role")
     if role is None:
         roles = [("personal", "Personal device", "you, in every region; switch with tailscale switch"),

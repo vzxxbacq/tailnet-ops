@@ -126,20 +126,32 @@ class AskTest(TempDirTest):
                             "Which region first?": "ovs"})
         self.assertEqual(got, {"host": None, "os_name": "linux", "role": "personal", "region": "ovs",
                                "port": 41641, "name": "owners-mac"})
-        self.assertEqual(ui.asked, ["Which Tailscale?", "Which OS?", "Which machine?", "How does it join?",
+        self.assertEqual(ui.asked, ["Which Tailscale?", "Which machine?", "How does it join?",
                                     "Which region first?", "UDP port for Tailscale (behind NAT: one the provider passes)", "Its name in the tailnet"])
+        self.assertEqual(ui.said, ["OS"])                             # this machine's own: said, not asked
 
-    def test_the_os_decides_whether_this_machine_is_offered(self):
-        got, ui = self.ask({"Which OS?": "macos", "Which machine?": "box"}, this_os="linux")
-        self.assertEqual((got["host"], got["os_name"], got["role"]), ("box", "macos", "server"))
-        with self.assertRaises(AssertionError):                       # "This machine" is not a choice
-            self.ask({"Which OS?": "macos", "Which machine?": None}, this_os="linux")
+    def test_the_os_from_an_earlier_join_is_said(self):
+        self.site.joined["box"] = {"ssh": "box", "role": "server", "region": "cn", "os": "macos"}
+        got, ui = self.ask({"Which machine?": "box"}, detect_os=lambda h: self.fail("no need to look"))
+        self.assertEqual((got["os_name"], ui.said), ("macos", ["OS"]))
+
+    def test_the_os_is_found_over_ssh(self):
+        got, ui = self.ask({"Which machine?": "box"}, detect_os=lambda h: "macos")
+        self.assertEqual(got["os_name"], "macos")
+        self.assertNotIn("Which OS?", ui.asked)
+        self.assertEqual(ui.said, ["OS"])
+        got, ui = self.ask({"Which machine?": "box", "Which OS?": "linux"}, detect_os=lambda h: None)
+        self.assertEqual(got["os_name"], "linux")                     # not reachable: asked
+        self.assertIn("Which OS?", ui.asked)
+        self.assertIn("could not reach box over SSH to see its OS", ui.notes)
+        got, ui = self.ask({"Which machine?": "box", "Which OS?": "macos"})   # --offline: no SSH, asked
+        self.assertEqual(got["os_name"], "macos")
+        self.assertEqual(ui.notes, [])
 
     def test_the_app_on_this_mac_or_another(self):
         got, ui = self.ask({"Which Tailscale?": "app", "Which Mac?": "here"}, this_os="macos")
         self.assertEqual(got, {"host": None, "here": True, "app": True, "region": "cn", "name": "owners-mac"})
-        self.assertNotIn("Which OS?", ui.asked)                       # the app: macOS only, said not asked
-        self.assertIn("Which OS?", ui.said)
+        self.assertNotIn("Which OS?", ui.asked + ui.said)              # the app runs on macOS only
         got, ui = self.ask({"Which Tailscale?": "app", "Which Mac?": "other", "Its name in the tailnet": "air"},
                            this_os="macos")
         self.assertEqual(got, {"host": None, "here": False, "app": True, "region": "cn", "name": "air"})
@@ -149,26 +161,28 @@ class AskTest(TempDirTest):
 
     def test_a_site_host_needs_no_more_questions(self):
         got, ui = self.ask({"Which machine?": "cn-control"})
-        self.assertEqual(got, {"host": "cn-control", "os_name": "linux"})
+        self.assertEqual(got, {"host": "cn-control"})
         self.assertEqual(ui.notes, ["cn-control is the control host of cn: it joins cn as a server."])
 
     def test_options_skip_their_questions(self):
-        got, ui = self.ask({}, host="box", given={"role": "server", "region": "cn", "port": 20531}, pick=False)
-        self.assertEqual(got, {"host": "box", "name": "box"})
+        got, ui = self.ask({}, host="box", given={"role": "server", "region": "cn", "port": 20531, "os_name": "linux"},
+                           pick=False)
+        self.assertEqual(got, {"host": "box", "os_name": "linux", "name": "box"})
         self.assertEqual(ui.asked, ["Its name in the tailnet"])
         got, ui = self.ask({"Which Mac?": "other"}, this_os="macos", given={"app": True})
         self.assertNotIn("Which Tailscale?", ui.asked)                # --app answers it
 
     def test_another_machine_by_alias(self):
-        got, _ui = self.ask({"Which machine?": "?", "SSH alias": "far-box", "Which region?": "ovs"})
+        got, _ui = self.ask({"Which machine?": "?", "SSH alias": "far-box", "Which region?": "ovs"},
+                            detect_os=lambda h: "linux")
         self.assertEqual(got, {"host": "far-box", "os_name": "linux", "role": "server", "region": "ovs",
                                "port": 41641, "name": "far-box"})
 
     def test_a_nat_machine_gives_its_port(self):
-        got, ui = self.ask({"Which machine?": "box", "Which region?": "ovs", "UDP port for Tailscale (behind NAT: one the provider passes)": "20531"})
+        got, ui = self.ask({"Which machine?": "box", "Which OS?": "linux", "Which region?": "ovs", "UDP port for Tailscale (behind NAT: one the provider passes)": "20531"})
         self.assertEqual(got["port"], 20531)
         with self.assertRaises(AssertionError):                      # not a port: asked again in a real UI
-            self.ask({"Which machine?": "box", "UDP port for Tailscale (behind NAT: one the provider passes)": "70000"})
+            self.ask({"Which machine?": "box", "Which OS?": "linux", "UDP port for Tailscale (behind NAT: one the provider passes)": "70000"})
         got, ui = self.ask({"Which Tailscale?": "app", "Which Mac?": "other"}, this_os="macos")
         self.assertNotIn("UDP port for Tailscale (behind NAT: one the provider passes)", ui.asked)                       # the app picks its own port
 
