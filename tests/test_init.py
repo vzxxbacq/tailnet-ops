@@ -47,12 +47,11 @@ PROBE = "uid=1000\nroot=sudo\nos=Ubuntu 24.04 LTS\narch=x86_64\nsystemd=yes\ntoo
 
 ANSWERS = [
     "example", "", "",                              # site name, owner user, DNS suffix (defaults)
-    "cn", "cn-edge", "cn-probe", "n", "100.64.10.0/24", "cn-extra", "",  # region 1; one more machine; any port
-    "ovs", "ovs-edge", "ovs-probe", "y", "", "", "20000-20002",          # region 2; free /24; three ports pass
+    "cn", "cn-edge", "cn-probe", "n", "100.64.10.0/24", "",  # region 1; any port
+    "ovs", "ovs-edge", "ovs-probe", "y", "", "20000-20002",              # region 2; free /24; three ports pass
     "",                                             # no more regions
     "l1", "cn-edge", "ovs-edge", "203.0.113.30", "", "11011",  # line 1: one-way by default, tunnel port
     "",                                             # no more lines
-    "n",                                            # this machine does not join
 ]
 
 EXPECTED = {
@@ -75,7 +74,6 @@ EXPECTED = {
     },
     "hosts": {
         "cn-edge": {"netfilter_mode": "off"},
-        "cn-extra": {"region": "cn"},
         "ovs-edge": {"tailscale_port": 20002},
     },
     "lines": [{
@@ -156,7 +154,7 @@ class InitTest(unittest.TestCase):
         self.assertIn('[hosts.cn-edge] gets netfilter_mode = "off"', joined)
         self.assertIn("ovs-probe: python3 is missing", "\n".join(notes + init.checker_problems(
             "ovs-probe", init.parse_facts(PROBE.replace("tool=python3\n", "")))))
-        sitemod.parse(data, known_host=lambda h: h == "cn-extra")
+        sitemod.parse(data, known_host=lambda h: False)
 
     def test_busy_ports_move_and_are_recorded(self):
         busy = CN_EDGE + "listen=tcp 0.0.0.0:9443\nlisten=udp 0.0.0.0:3478\nlisten=tcp 127.0.0.1:9090\n"

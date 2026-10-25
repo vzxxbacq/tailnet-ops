@@ -15,14 +15,15 @@ from pathlib import Path, PurePosixPath
 
 from . import privacy
 from .remote import ssh_config
-from .site import SiteError, read_toml, resolve_dir
+from .site import SiteError, read_joined, read_toml, resolve_dir
 
-BLOCKED_NAMES = {"site.toml", "inventory.toml"}
+BLOCKED_NAMES = {"site.toml", "inventory.toml", "joined.json"}
 BLOCKED_SUFFIXES = {".key", ".pem", ".csr", ".crt", ".p12", ".pfx", ".srl", ".sqlite", ".db"}
 
 
 def site_host_names(site_dir, lookup=None):
-    """Host aliases (and non-IP SSH HostNames) of the local site, if there is one."""
+    """Host aliases (and non-IP SSH HostNames) of the local site, if there is one, with the
+    machines tn joined."""
     lookup = lookup or ssh_config
     path = Path(site_dir) / "site.toml"
     if not path.exists():
@@ -40,6 +41,12 @@ def site_host_names(site_dir, lookup=None):
             names += [ln.get("initiator"), ln.get("responder"), ln.get("name")]
     if isinstance(data.get("hosts"), dict):
         names += list(data["hosts"])
+    try:
+        joined = read_joined(site_dir)
+    except SiteError:
+        joined = {}
+    for name, rec in joined.items():
+        names += [name, rec.get("ssh") if isinstance(rec, dict) else None]
     names = [n for n in names if isinstance(n, str) and n]
     for alias in list(names):
         hostname = lookup(alias).get("hostname", "")

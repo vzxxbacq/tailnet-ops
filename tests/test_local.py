@@ -1,18 +1,5 @@
 from tailnet_ops import remote
-from tailnet_ops import site as sitemod
-from tests.helpers import TempDirTest, example_text
-
-LOCAL = ("[hosts.laptop]", "[hosts.vault]")   # the example's machine that runs tn
-
-
-class LocalHostTest(TempDirTest):
-    def test_local_host_needs_no_ssh_alias_and_is_unique(self):
-        site = sitemod.load(self.make_site_dir(example_text(LOCAL), "l"), known_host=lambda a: a != "vault")
-        self.assertTrue(site.host_settings["vault"].local)
-        two = example_text(LOCAL, ("[[lines]]", "[hosts.other]\nregion = \"cn\"\nlocal = true\n\n[[lines]]"))
-        with self.assertRaises(sitemod.SiteError) as cm:
-            self.load_site(two, name="two")
-        self.assertIn("only one host can be local", str(cm.exception))
+from tests.helpers import TempDirTest
 
 
 class LocalRunnerTest(TempDirTest):

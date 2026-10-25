@@ -2,13 +2,12 @@
 
 import ipaddress
 import json
-import platform
 import re
 from dataclasses import dataclass, field
 
 from . import pins
 from .privacy import CGNAT
-from .site import HOST_RE, REGION_NAME_RE, TAILSCALE_RESERVED, USER_RE, dns_label, suffix_problem
+from .site import HOST_RE, REGION_NAME_RE, TAILSCALE_RESERVED, USER_RE, suffix_problem
 
 # Read-only. Runs as the SSH login user.
 FACTS_SCRIPT = r"""set -u
@@ -179,10 +178,6 @@ def ask_answers(asker):
             "ipv4_prefix": asker.ask(
                 f"  {name}: tailnet IPv4 prefix inside 100.64.0.0/10 (empty to pick a free /24)",
                 None, _check_prefix, allow_empty=True),
-            "members": [m.strip() for m in asker.ask(
-                f"  {name}: other machines in this region, as SSH aliases (comma-separated, empty for none)",
-                None, lambda v: None if all(HOST_RE.match(m.strip()) for m in v.split(",") if m.strip())
-                else "SSH aliases separated by commas", allow_empty=True).split(",") if m.strip()],
             "ports": parse_ports(asker.ask(
                 f"  {name}: ports the provider lets in to the control host, used in order for HTTPS, STUN and "
                 "Tailscale (e.g. 20000-20002; empty if any port can be opened)",
@@ -203,28 +198,7 @@ def ask_answers(asker):
             "port": int(asker.ask(f"  {name}: UDP port the line passes to the entry, for the tunnel", None,
                                   lambda v: None if v.isdigit() and 1 <= int(v) <= 65535 else "enter a port number")),
         })
-    a["this_machine"] = ask_this_machine(asker, [r["name"] for r in a["regions"]], hosts_in(a))
     return a
-
-
-def this_machine_name():
-    return dns_label(platform.node().split(".")[0]) or "this-mac"
-
-
-def ask_this_machine(asker, regions, taken):
-    """Whether the machine that runs tn joins too, under which name, and how."""
-    if not regions or not asker.yes_no("Does this machine, where tn runs, join the network too?", False):
-        return None
-    name = asker.ask("  its name in the network", this_machine_name(),
-                     lambda v: _check_alias(v) or ("already a host of the site" if v in taken else None))
-    role = asker.ask("  how it joins: server (one region, tagged, always on) or personal (your own device: "
-                     "every region as you, switch by place)", "personal",
-                     lambda v: None if v in ("server", "personal") else "server or personal")
-    region = asker.ask(f"  {'the region it starts on' if role == 'personal' else 'its region'} "
-                       f"({', '.join(regions)})", regions[0],
-                       lambda v: None if v in regions else f"one of {', '.join(regions)}")
-    return {"name": name, "role": role, "region": region,
-            "os": "macos" if platform.system() == "Darwin" else "linux"}
 
 
 def parse_ports(text):
@@ -426,25 +400,9 @@ def derive(answers, facts, hostnames):
         if f is not None and f.cgnat_resolvers():
             hosts.setdefault(alias, {})["netfilter_mode"] = "off"
             comments[(f"hosts.{alias}", "netfilter_mode")] = "its resolvers sit inside 100.64.0.0/10"
-    for ra in answers["regions"]:
-        for alias in ra.get("members", []):
-            if alias not in (ra["control_host"], ra["check_from"]):
-                hosts.setdefault(alias, {})["region"] = ra["name"]
     for alias, port in host_ports.items():
         hosts.setdefault(alias, {})["tailscale_port"] = port
         comments[(f"hosts.{alias}", "tailscale_port")] = "UDP for tailscaled --port, the next allowed port"
-    me = answers.get("this_machine")
-    if me:
-        table = f"hosts.{me['name']}"
-        h = hosts.setdefault(me["name"], {})
-        h["region"] = me["region"]
-        h["local"] = True
-        comments[(table, "local")] = "the machine that runs tn: it joins from here, with sudo"
-        if me["os"] == "macos":
-            h["os"] = "macos"
-        if me["role"] == "personal":
-            h["role"] = "personal"
-            comments[(table, "role")] = "the owner's device: every region, one profile each"
     if hosts:
         data["hosts"] = hosts
     if lines:

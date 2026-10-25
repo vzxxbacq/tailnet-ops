@@ -5,49 +5,22 @@ import shutil
 import subprocess
 import unittest
 
-from tailnet_ops import init, join, macos, scripts
-from tailnet_ops import site as sitemod
+from tailnet_ops import join, macos, scripts, targets
 from tailnet_ops.procedure import StepError
-from tests.helpers import FakeRunner, TempDirTest, bash, example_text, run_bash
+from tests.helpers import FakeRunner, TempDirTest, bash, run_bash
 from tests.test_join import CA, FakeOps, status
 
-# The example's [hosts.laptop] is a personal Mac that runs tn.
-PERSONAL = ("[hosts.laptop]", "[hosts.mac]")
-MAC = (PERSONAL, ('role = "personal"', 'role = "server"'))
+# This machine, a Mac: as a personal device and as a server of cn.
+PERSONAL = targets.Target(name="mac", role="personal", region="cn", os="macos")
+MAC = targets.Target(name="mac", role="server", region="cn", os="macos")
 USERS = json.dumps([{"id": 4, "name": "other"}, {"id": 1, "name": "owner"}])
 INTEL = "/usr/local/opt/tailscale/bin/tailscale"
 
 
-class HostSettingsTest(TempDirTest):
-    def problems(self, *pairs):
-        self.n = getattr(self, "n", 0) + 1
-        with self.assertRaises(sitemod.SiteError) as cm:
-            self.load_site(example_text(*pairs), name=f"bad{self.n}")
-        return str(cm.exception)
-
-    def test_personal_device(self):
-        site = self.load_site(example_text(PERSONAL))
-        self.assertTrue(site.is_personal("mac"))
-        self.assertEqual(site.host_tags("mac"), [])
-        self.assertFalse(site.is_personal("cn-probe"))
-
-    def test_bad_settings(self):
-        msg = self.problems(("[[lines]]", '[hosts.mac]\nregion = "cn"\nos = "windows"\nrole = "admin"\n\n[[lines]]'))
-        self.assertIn("hosts.mac.os: use one of linux, macos", msg)
-        self.assertIn("hosts.mac.role: use one of server, personal", msg)
-        msg = self.problems(("[[lines]]", '[hosts.mac]\nrole = "personal"\ntags = ["tag:cn-server"]\n\n[[lines]]'))
-        self.assertIn("hosts.mac.region: set the region a personal device starts on", msg)
-        self.assertIn("hosts.mac.tags: a personal device has no tags", msg)
-        msg = self.problems(('[hosts.cn-gateway]\nregion = "cn"', '[hosts.cn-gateway]\nregion = "cn"\nrole = "personal"'))
-        self.assertIn("a personal device cannot be a control host, a checker or a line's end", msg)
-        msg = self.problems(("[[lines]]", '[hosts.mac]\nregion = "cn"\nos = "macos"\nnetfilter_mode = "off"\n\n[[lines]]'))
-        self.assertIn("hosts.mac.netfilter_mode: Linux only", msg)
-
-
 class MacPlanTest(TempDirTest):
     def test_server_plan(self):
-        site = self.load_site(example_text(*MAC))
-        job = join.Join(site, "mac", ops=FakeOps())
+        site = self.load_site()
+        job = join.Join(site, ops=FakeOps(), member=MAC)
         text = job.plan_text()[0]
         for n, title in enumerate(["Preflight", "Tailscale", "Site CA", "tailscaled", "Join", "Names", "Verify"], 1):
             self.assertIn(f"Step {n}/7  {title}", text)
@@ -63,9 +36,9 @@ class MacPlanTest(TempDirTest):
         self.assertTrue(job.accept_dns)                  # only the suffix goes to MagicDNS
 
     def test_summary_says_macos_will_ask(self):
-        site = self.load_site(example_text(*MAC))
+        site = self.load_site()
         facts = "TN-FACT os=macOS 15.1\nTN-FACT machine=arm64\nTN-FACT port=free\nTN-FACT login=ok\nTN-FACT ca=no\n"
-        job = join.Join(site, "mac", runner=FakeRunner({"TN-FACT os=": facts}), ops=FakeOps())
+        job = join.Join(site, runner=FakeRunner({"TN-FACT os=": facts}), ops=FakeOps(), member=MAC)
         text = job.summary_text(job.check())
         self.assertIn("host          macOS 15.1, arm64", text)
         self.assertIn("macOS asks for your password or Touch ID in step 3", text)
@@ -75,11 +48,11 @@ class MacPlanTest(TempDirTest):
 class PersonalTest(TempDirTest):
     def setUp(self):
         super().setUp()
-        self.site = self.load_site(example_text(PERSONAL))
+        self.site = self.load_site()
         self.out = []
 
     def job(self, runner):
-        job = join.Join(self.site, "mac", runner=runner, ops=FakeOps(), out=self.out.append)
+        job = join.Join(self.site, runner=runner, ops=FakeOps(), out=self.out.append, member=PERSONAL)
         job.facts["ts_bin"] = INTEL
         return job
 
@@ -170,8 +143,8 @@ class PersonalTest(TempDirTest):
 class MacScriptsTest(TempDirTest):
     def setUp(self):
         super().setUp()
-        self.site = self.load_site(example_text(PERSONAL))
-        self.job = join.Join(self.site, "mac", ops=FakeOps())
+        self.site = self.load_site()
+        self.job = join.Join(self.site, ops=FakeOps(), member=PERSONAL)
 
     def bodies(self):
         return [("preflight", macos.preflight(CA)), ("install", macos.INSTALL),
@@ -302,19 +275,3 @@ class MacScriptsTest(TempDirTest):
         self.assertIn("uninstall tailscale", log)
         self.assertIn("HOMEBREW_NO_AUTO_UPDATE=1", log)
         self.assertFalse((root / "tn").exists())                 # nothing else in it, so it goes too
-
-
-class InitThisMachineTest(unittest.TestCase):
-    def test_asks_and_writes_the_host(self):
-        answers = iter(["y", "my-mac", "personal", "ovs"])
-        asker = init.Asker(lambda prompt: next(answers), out=lambda s: None)
-        me = init.ask_this_machine(asker, ["cn", "ovs"], ["cn-edge"])
-        self.assertEqual({k: me[k] for k in ("name", "role", "region")},
-                         {"name": "my-mac", "role": "personal", "region": "ovs"})
-        no = init.ask_this_machine(init.Asker(lambda prompt: "n", out=lambda s: None), ["cn"], [])
-        self.assertIsNone(no)
-        seen = []
-        taken = iter(["y", "cn-edge", "mac2", "", ""])
-        me = init.ask_this_machine(init.Asker(lambda prompt: next(taken), out=seen.append), ["cn"], ["cn-edge"])
-        self.assertEqual((me["name"], me["role"], me["region"]), ("mac2", "personal", "cn"))
-        self.assertIn("  already a host of the site", seen)

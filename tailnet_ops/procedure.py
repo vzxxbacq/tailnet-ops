@@ -174,6 +174,7 @@ class Procedure:
             if answer.strip() != "yes":
                 self.out("Not applied; nothing changed.")
                 return 1
+        self.before_steps()
         failed = self._run_steps(steps, "apply")
         if failed is not None:
             done = failed.number - 1
@@ -207,6 +208,9 @@ class Procedure:
         self.after_rollback()
         self.out("\n" + self.rolled_back_message())
         return 0
+
+    def before_steps(self):
+        """Runs once apply is confirmed, before the first step."""
 
     def after_rollback(self):
         """A read-only check after a rollback; subclasses report what is left."""

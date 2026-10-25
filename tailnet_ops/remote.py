@@ -4,6 +4,7 @@ import ipaddress
 import shlex
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=15"]
 
@@ -142,6 +143,21 @@ class SSHRunner:
         p = subprocess.run(["scp", "-q", *SSH_OPTS, str(local), f"{host}:{remote}"], capture_output=True, text=True)
         if p.returncode != 0:
             raise RemoteError(f"scp to {host} failed: {p.stderr.strip()}")
+
+
+def ssh_aliases(path=None):
+    """The Host aliases in ~/.ssh/config, in order, without patterns."""
+    path = Path(path) if path else Path.home() / ".ssh" / "config"
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        words = line.split()
+        if len(words) >= 2 and words[0].lower() == "host":
+            out += [w for w in words[1:] if not any(c in w for c in "*?!") and w not in out]
+    return out
 
 
 def ssh_config(host):

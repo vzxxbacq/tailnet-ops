@@ -37,6 +37,8 @@ derp_region_name = "OVS control"
 official_derp = true
 tags = ["tag:ovs-server", "tag:ovs-border"]
 
+# Per-host settings for the hosts above. A machine that only joins is not listed here:
+# `tn join` takes it from options or questions (tn join --help).
 [hosts.cn-control]                 # optional per-host settings, used when the host joins its tailnet
 netfilter_mode = "off"             # tn init sets "off" where the resolvers sit inside 100.64.0.0/10
 
@@ -50,12 +52,6 @@ region = "cn"                      # needed for hosts that neither control nor c
 
 [hosts.ovs-line]
 region = "ovs"
-
-[hosts.laptop]                     # the machine that runs tn, if it joins too
-region = "cn"                      # a personal device starts here
-local = true                       # its scripts run here with sudo, not over SSH
-os = "macos"                       # "linux" (default) or "macos": Homebrew's tailscale under launchd
-role = "personal"                  # "server" (default) or "personal": the owner's device, in every region
 
 [[lines]]                          # optional dedicated links between regions
 name = "line1"

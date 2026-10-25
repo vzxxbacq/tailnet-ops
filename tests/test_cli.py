@@ -100,7 +100,30 @@ class CliTest(TempDirTest):
         self.assertIn("✓ Ready: every read-only check on cn-probe passed.", out)
         rc, _out, err = run_cli("join", "plan", "nowhere", "--offline", "--site", str(self.site))
         self.assertEqual(rc, 1)
-        self.assertIn("not in any region", err)
+        self.assertIn("nowhere: choose its region with --region (cn, ovs)", err)
+
+    def test_join_from_options(self):
+        rc, out, err = run_cli("join", "plan", "box", "--region", "ovs", "--offline", "--site", str(self.site))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("box → region ovs (chosen): tailnet 100.64.2.0/24, name box.ovs.tailnet.internal", out)
+        self.assertIn("tags          tag:ovs-server", out)
+        rc, out, err = run_cli("join", "plan", "--personal", "--name", "my-mac", "--os", "macos", "--offline",
+                               "--site", str(self.site))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("my-mac → personal device of owner in cn, ovs; starts on cn", out)
+        self.assertIn("Install tailscale with Homebrew", out)
+        rc, _out, err = run_cli("join", "plan", "cn-control", "--personal", "--offline", "--site", str(self.site))
+        self.assertEqual(rc, 1)
+        self.assertIn("cn-control is a control host, a checker or a line's end", err)
+        rc, out, _err = run_cli("join", "list", "--site", str(self.site))
+        self.assertEqual(rc, 0)
+        self.assertIn("No machines joined by tn join yet", out)
+        self.assertIn("Hosts in site.toml join as servers of their region: cn-control, cn-probe", out)
+
+    def test_join_asks_only_in_a_terminal(self):
+        rc, _out, err = run_cli("join", "--site", str(self.site))
+        self.assertEqual(rc, 1)
+        self.assertIn("without a terminal, give an action", err)
 
     def test_plan_redacted(self):
         rc, out, _ = run_cli("control", "plan", "cn", "--redact", "--site", str(self.site))

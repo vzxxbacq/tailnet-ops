@@ -5,7 +5,7 @@ import datetime
 import sys
 from pathlib import Path
 
-from . import VERSION, init, remote, site as sitemod
+from . import VERSION, init, pins, remote, site as sitemod, targets, tui
 from .control import Deployment
 from .join import Join
 from .line import Line
@@ -65,7 +65,7 @@ def cmd_site_check(args):
     except sitemod.SiteError as e:
         problems += e.problems
         site = None
-    redact = Redactor(site) if args.redact and site else (Redactor() if args.redact else identity)
+    redact = redactor(site) if args.redact and site else (Redactor() if args.redact else identity)
     if problems:
         print(f"{directory / sitemod.SITE_FILE}: {len(problems)} problem(s)", file=sys.stderr)
         for p in problems:
@@ -79,18 +79,19 @@ def cmd_site_check(args):
         print(redact(f"  line {ln.name}: {ln.initiator} -> {ln.responder} ({ln.responder_entry_ipv4})"
                      f"{', one-way' if ln.one_way else ''}"))
     for h in site.host_settings.values():
-        parts = ["this machine" if h.local else "", "personal device" if h.role == "personal" else "",
-                 "macOS" if h.os == "macos" else "", f"region {h.region}" if h.region else "",
+        parts = [f"region {h.region}" if h.region else "",
                  f"tailscale_port {h.tailscale_port}/udp" if h.tailscale_port else "",
                  f"netfilter_mode {h.netfilter_mode}" if h.netfilter_mode else ""]
         print(redact(f"  host {h.name}: {', '.join(p for p in parts if p) or 'no settings'}"))
+    if site.joined:
+        print(redact(f"  joined by tn join: {', '.join(sorted(site.joined))} (tn join list)"))
     return 0
 
 
 def _deployment(args, kind):
     site = load_site(args)
-    console = Console(Redactor(site) if args.redact else identity, run_log(site, kind, args.region))
-    runner = remote.SSHRunner(out=console.out, log=console.log, local_hosts=local_hosts(site))
+    console = Console(redactor(site) if args.redact else identity, run_log(site, kind, args.region))
+    runner = remote.SSHRunner(out=console.out, log=console.log)
     return Deployment(site, args.region, runner=runner, out=console.out), console
 
 
@@ -122,8 +123,107 @@ def cmd_control(args):
     return 2
 
 
+JOIN_ACTIONS = ("plan", "preflight", "apply", "verify", "rollback", "list")
+
+
+def detect_os(host):
+    """`uname -s` over SSH (read-only): "macos", "linux", or None when the host does not answer."""
+    result = remote.SSHRunner(out=lambda s: None).run(host, "uname -s\n", check=False, echo=False)
+    words = result.output.split()
+    return {"Darwin": "macos", "Linux": "linux"}.get(words[-1] if words else "")
+
+
+def join_options(args):
+    """The resolve() keyword arguments that the command line gives."""
+    role = "personal" if args.personal else ("server" if args.server else None)
+    return {"name": args.name, "role": role, "region": args.region, "os_name": args.os, "port": args.port,
+            "netfilter_mode": args.netfilter, "accept_dns": None if args.dns is None else args.dns == "on"}
+
+
 def cmd_join(args):
-    return run_checked(args, "join", args.host, lambda site, runner, out: Join(site, args.host, runner=runner, out=out))
+    site = load_site(args)
+    action, host = args.action, args.host
+    if action is not None and action not in JOIN_ACTIONS:
+        action, host = None, action          # `tn join <host>`: ask for the rest
+    if action == "list":
+        return join_list(site, args)
+    options = join_options(args)
+    ui = tui.UI()
+    if action is None:
+        if not ui.tty:
+            raise ValueError("without a terminal, give an action: tn join plan|apply|verify|rollback [host] [options]")
+        print(ui.bold("tn join") + ui.dim(" · add a machine to the tailnet. Nothing changes until you type yes.\n"))
+        answers = targets.ask(site, ui, remote.ssh_aliases(), host=host, given=options, pick=args.host is None)
+        host = answers.pop("host")
+        options.update({k: v for k, v in answers.items() if v is not None})
+    target = targets.resolve(site, host, **options, detect_os=None if args.offline else detect_os)
+    console = Console(redactor(site) if args.redact else identity,
+                      run_log(site, f"join-{action or 'ask'}", target.name))
+    runner = remote.SSHRunner(out=console.out, log=console.log, local_hosts=[target.alias] if target.local else ())
+    job = Join(site, runner=runner, out=console.out, member=target)
+    job.remember = lambda m: targets.remember(site, m)
+    job.forget = lambda m: targets.forget(site, m)
+    try:
+        if action is None:
+            return join_asked(job, console, ui, target, offline=args.offline)
+        return run_job(job, console, args, action)
+    finally:
+        console.close()
+
+
+def join_asked(job, console, ui, target, offline=False):
+    """After the questions: check, show the short plan, and apply only if asked."""
+    checks = None
+    if not offline:
+        print(ui.dim("\nChecking the machine (read-only)…"))
+        checks = job.check()
+    show_plan(job, console, False, checks)
+    later = targets.command_line(target)
+    if checks and checks["fails"]:
+        print(f"\nFix the problems above, then run: {later}")
+        return 1
+    choices = [("apply", "Apply", "install and join; you type yes to start"),
+               ("full", "Show the exact scripts", "every remote script and rollback"),
+               ("quit", "Quit", "nothing changes")]
+    while True:
+        choice = ui.select("What now?", choices)
+        if choice != "full":
+            break
+        show_plan(job, console, True, checks)
+        choices = [c for c in choices if c[0] != "full"]
+    if choice == "quit":
+        print(f"Nothing changed. To apply later: {later}")
+        return 0
+    rc = job.apply()
+    print(f"\nThe same without questions: {later}")
+    return rc
+
+
+def join_list(site, args):
+    redact = redactor(site) if args.redact else identity
+    rows = [("Name", "Machine", "How", "Region", "OS")]
+    for name, rec in sorted(site.joined.items()):
+        rows.append((name, f"ssh {rec['ssh']}" if rec.get("ssh") else "this machine", rec.get("role", "server"),
+                     rec.get("region", "?"), rec.get("os", "linux")))
+    if len(rows) == 1:
+        print("No machines joined by tn join yet, apart from the hosts in site.toml.")
+    else:
+        widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+        for r in rows:
+            print(redact("  " + "  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip()))
+    hosts = [h for h in site.hosts() if site.is_site_host(h)]
+    print(redact(f"Hosts in site.toml join as servers of their region: {', '.join(hosts)}"))
+    return 0
+
+
+def redactor(site):
+    """--redact for a site, covering the machines tn joined too."""
+    extra = {}
+    for i, (name, rec) in enumerate(sorted(site.joined.items()), 1):
+        extra[name] = f"<joined{i}>"
+        if rec.get("ssh"):
+            extra.setdefault(rec["ssh"], f"<joined{i}>")
+    return Redactor(site, extra_hosts=extra)
 
 
 def cmd_line(args):
@@ -132,7 +232,7 @@ def cmd_line(args):
 
 def cmd_line_list(args):
     site = load_site(args)
-    redact = Redactor(site) if args.redact else identity
+    redact = redactor(site) if args.redact else identity
     if not site.lines:
         print("No lines in site.toml. Add [[lines]] (see examples/site.example.toml) or run tn init.")
         return 0
@@ -157,8 +257,8 @@ def cmd_line_list(args):
 def cmd_dns(args):
     from .names import Names
     site = load_site(args)
-    redact = Redactor(site) if args.redact else identity
-    names = Names(site, remote.SSHRunner(out=lambda s: print(redact(s)), local_hosts=local_hosts(site)),
+    redact = redactor(site) if args.redact else identity
+    names = Names(site, remote.SSHRunner(out=lambda s: print(redact(s))),
                   out=lambda s: print(redact(s)))
     if args.action == "list":
         rows = [("Region", "Name", "Short forms", "Address", "How")] + names.table()
@@ -179,33 +279,32 @@ def cmd_dns(args):
     return 0
 
 
-def local_hosts(site):
-    return [alias for alias, h in site.host_settings.items() if h.local]
-
-
 def run_checked(args, kind, name, make):
-    """plan (with read-only checks unless --offline), apply, verify and rollback for join and line."""
+    """plan (with read-only checks unless --offline), apply, verify and rollback for a line."""
     site = load_site(args)
-    console = Console(Redactor(site) if args.redact else identity, run_log(site, f"{kind}-{args.action}", name))
-    runner = remote.SSHRunner(out=console.out, log=console.log, local_hosts=local_hosts(site))
+    console = Console(redactor(site) if args.redact else identity, run_log(site, f"{kind}-{args.action}", name))
+    runner = remote.SSHRunner(out=console.out, log=console.log)
     try:
-        job = make(site, runner, console.out)
-        if args.action == "plan":
-            checks = None if args.offline else job.check()
-            if checks is not None:
-                console.log(f"checks: {checks}")
-            show_plan(job, console, args.full, checks)
-            return 1 if checks and checks["fails"] else 0
-        if args.action == "apply":
-            return job.apply(yes=args.yes)
-        if args.action == "rollback":
-            return job.rollback(yes=args.yes)
-        if args.action == "verify":
-            return job.verify()
-        if args.action == "preflight" and hasattr(job, "preflight"):
-            return job.preflight()
+        return run_job(make(site, runner, console.out), console, args, args.action)
     finally:
         console.close()
+
+
+def run_job(job, console, args, action):
+    if action == "plan":
+        checks = None if args.offline else job.check()
+        if checks is not None:
+            console.log(f"checks: {checks}")
+        show_plan(job, console, args.full, checks)
+        return 1 if checks and checks["fails"] else 0
+    if action == "apply":
+        return job.apply(yes=args.yes)
+    if action == "rollback":
+        return job.rollback(yes=args.yes)
+    if action == "verify":
+        return job.verify()
+    if action == "preflight" and hasattr(job, "preflight"):
+        return job.preflight()
     return 2
 
 
@@ -328,23 +427,33 @@ def build_parser():
             c.add_argument("--yes", action="store_true", help="do not ask")
         c.set_defaults(func=cmd_control)
 
-    p = sub.add_parser("join", help="add a host to its region's tailnet")
-    s = p.add_subparsers(dest="action", required=True)
-    for action, help_text in (
-        ("plan", "print every step with its exact remote script and rollback; changes nothing"),
-        ("preflight", "run step 1 only (read-only)"),
-        ("apply", "install Tailscale and join; asks for yes"),
-        ("verify", "check the host is in its tailnet with the right tags (read-only)"),
-        ("rollback", "leave the tailnet and remove what join added; asks for yes"),
-    ):
-        c = s.add_parser(action, parents=[common], help=help_text)
-        c.add_argument("host", help="SSH alias")
-        if action == "plan":
-            c.add_argument("--full", action="store_true", help="print every remote script and rollback")
-            c.add_argument("--offline", action="store_true", help="skip the read-only checks over SSH")
-        if action in ("apply", "rollback"):
-            c.add_argument("--yes", action="store_true", help="do not ask")
-        c.set_defaults(func=cmd_join)
+    p = sub.add_parser(
+        "join", parents=[common], help="add a machine to the tailnet; without an action it asks",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Add a machine to the tailnet: this machine, or one you reach over SSH.\n\n"
+                    "  tn join                          ask which machine, how and where, then show the plan\n"
+                    "  tn join plan|apply [host] ...    the same from options; no host = this machine\n"
+                    "  tn join verify|rollback [host]   uses what apply recorded\n"
+                    "  tn join list                     machines joined so far\n\n"
+                    "A server joins one region with a tagged key. A personal device joins every region\n"
+                    "as the owner, one Tailscale profile each (sudo tailscale switch <region>).\n"
+                    "Only hosts that others use (control hosts, checkers, line ends) are in site.toml.")
+    p.add_argument("action", nargs="?", metavar="action",
+                   help="plan, preflight, apply, verify, rollback or list; leave out to be asked")
+    p.add_argument("host", nargs="?", help="SSH alias or a joined machine's name; leave out for this machine")
+    how = p.add_mutually_exclusive_group()
+    how.add_argument("--personal", action="store_true", help="the owner's device, in every region")
+    how.add_argument("--server", action="store_true", help="one region, tagged (the default)")
+    p.add_argument("--region", help="a server's region; where a personal device starts")
+    p.add_argument("--name", help="its name in the tailnet (default: the SSH alias or this machine's name)")
+    p.add_argument("--port", type=int, help=f"tailscaled's UDP port (default {pins.DEFAULT_TAILSCALE_PORT})")
+    p.add_argument("--netfilter", choices=sitemod.NETFILTER_MODES, help="Linux: tailscale up --netfilter-mode")
+    p.add_argument("--dns", choices=("on", "off"), help="accept MagicDNS (default: on where only the suffix goes to it)")
+    p.add_argument("--os", choices=targets.OSES, help="for --offline plans of a host over SSH (found by itself otherwise)")
+    p.add_argument("--full", action="store_true", help="plan: print every remote script and rollback")
+    p.add_argument("--offline", action="store_true", help="plan: skip the read-only checks")
+    p.add_argument("--yes", action="store_true", help="apply, rollback: do not ask")
+    p.set_defaults(func=cmd_join)
 
     p = sub.add_parser("line", help="the WireGuard tunnel of a dedicated line")
     s = p.add_subparsers(dest="action", required=True)

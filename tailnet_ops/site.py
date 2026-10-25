@@ -1,6 +1,7 @@
 """The private site directory and its site.toml."""
 
 import ipaddress
+import json
 import os
 import re
 import stat
@@ -13,6 +14,7 @@ from .privacy import CGNAT, TOOL_NET
 
 DEFAULT_SITE_DIR = "~/.config/tailnet-ops"
 SITE_FILE = "site.toml"
+JOINED_FILE = "joined.json"
 DEFAULT_DNS_SUFFIX = "tailnet.internal"
 NOTES_FILE = "notes.md"
 
@@ -150,9 +152,6 @@ class HostSettings:
     netfilter_mode: str = None   # tailscale up --netfilter-mode
     region: str = None           # needed only for hosts that are no region's control or checker host
     accept_dns: bool = None      # default: on where systemd-resolved runs (only <suffix> goes to MagicDNS)
-    local: bool = None           # the machine that runs tn: its scripts run here with sudo, not over SSH
-    os: str = None               # "linux" (default) or "macos"
-    role: str = None             # "server" (default): one region, tagged; "personal": the owner's device in every region
     tags: list = None            # default: see Site.host_tags
 
 
@@ -165,6 +164,7 @@ class Site:
     host_settings: dict = field(default_factory=dict)
     directory: Path = None
     dns_suffix: str = DEFAULT_DNS_SUFFIX
+    joined: dict = field(default_factory=dict)   # name -> how tn joined it (joined.json), for machines not in site.toml
 
     def region(self, name):
         if name not in self.regions:
@@ -204,19 +204,17 @@ class Site:
     def is_line_end(self, alias):
         return any(alias in (ln.initiator, ln.responder) for ln in self.lines)
 
-    def is_personal(self, alias):
-        h = self.host_settings.get(alias)
-        return bool(h and h.role == "personal")
+    def is_site_host(self, alias):
+        """A control host, a checker or a line's end: a host that others use."""
+        return any(alias in (r.control_host, r.check_from) for r in self.regions.values()) or self.is_line_end(alias)
 
-    def host_tags(self, alias):
+    def host_tags(self, alias, region=None):
         """[hosts.<alias>] tags, else the region's -server tag plus -gateway for a line
-        initiator and -border for a line responder. A personal device has none: the owner owns it."""
+        initiator and -border for a line responder."""
         h = self.host_settings.get(alias)
-        if self.is_personal(alias):
-            return []
         if h and h.tags:
             return list(h.tags)
-        region = self.host_region(alias)
+        region = region or self.host_region(alias)
         suffixes = {"-server"}
         suffixes |= {"-gateway" for ln in self.lines if ln.initiator == alias}
         suffixes |= {"-border" for ln in self.lines if ln.responder == alias}
@@ -318,10 +316,7 @@ REGION_KEYS = {
     "tags": list,
 }
 REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int, "alias_ipv4": str, "base_domain": str}
-HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str, "region": str, "tags": list, "accept_dns": bool,
-             "local": bool, "os": str, "role": str}
-ROLES = ("server", "personal")
-OSES = ("linux", "macos")
+HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str, "region": str, "tags": list, "accept_dns": bool}
 NETFILTER_MODES = ("on", "nodivert", "off")
 LINE_OPTIONAL = {"port": int, "tunnel_ipv4": str}
 LINE_KEYS = {
@@ -539,7 +534,7 @@ def parse(data, known_host=None, directory=None):
             problems.append(f"{where}: not a table")
             continue
         h = _typed(where, table, {}, HOST_KEYS, problems)
-        if alias not in named and not h.get("local") and (
+        if alias not in named and (
                 not HOST_RE.match(alias) or known_host is None or not known_host(alias)):
             problems.append(f"{where}: {alias!r} is neither a site host nor an SSH alias")
         port = h.get("tailscale_port")
@@ -551,21 +546,6 @@ def parse(data, known_host=None, directory=None):
         mode = h.get("netfilter_mode")
         if mode is not None and mode not in NETFILTER_MODES:
             problems.append(f"{where}.netfilter_mode: use one of {', '.join(NETFILTER_MODES)}")
-        os_name = h.get("os")
-        if os_name is not None and os_name not in OSES:
-            problems.append(f"{where}.os: use one of {', '.join(OSES)}")
-        if os_name == "macos" and mode is not None:
-            problems.append(f"{where}.netfilter_mode: Linux only")
-        role = h.get("role")
-        if role is not None and role not in ROLES:
-            problems.append(f"{where}.role: use one of {', '.join(ROLES)}")
-        if role == "personal":
-            if alias in named:
-                problems.append(f"{where}: a personal device cannot be a control host, a checker or a line's end")
-            if h.get("tags") is not None:
-                problems.append(f"{where}.tags: a personal device has no tags; the owner owns it")
-            if h.get("region") is None:
-                problems.append(f"{where}.region: set the region a personal device starts on")
         region_name = h.get("region")
         if region_name is not None and region_name not in regions:
             problems.append(f"{where}.region: no region {region_name!r}")
@@ -587,9 +567,6 @@ def parse(data, known_host=None, directory=None):
         return found[0] if len(found) == 1 else None
 
     line_regions = {region_of(h) for ln in lines for h in (ln.initiator, ln.responder)} - {None}
-    locals_ = [a for a, h in host_settings.items() if h.local]
-    if len(locals_) > 1:
-        problems.append(f"hosts {', '.join(locals_)}: only one host can be local (the machine that runs tn)")
     taken = [(f"regions.{n}.ipv4_prefix", ipaddress.IPv4Network(r.ipv4_prefix)) for n, r in regions.items()
              if _net("", r.ipv4_prefix, [])]
     taken += [(f"lines.{ln.name}.tunnel_ipv4", ipaddress.IPv4Network(ln.tunnel_ipv4)) for ln in lines
@@ -640,12 +617,30 @@ def read_toml(path):
         raise SiteError(f"{path}: {e}") from None
 
 
+def read_joined(directory):
+    """The machines tn joined that are not in site.toml: {name: settings}. Written by tn only."""
+    path = Path(directory) / JOINED_FILE
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except ValueError as e:
+        raise SiteError(f"{path}: {e}") from None
+    return data if isinstance(data, dict) else {}
+
+
+def write_joined(directory, joined):
+    write_private(Path(directory) / JOINED_FILE, json.dumps(joined, indent=2, sort_keys=True) + "\n")
+
+
 def load(directory, known_host=None, check_permissions=True):
-    """Load and validate <directory>/site.toml."""
+    """Load and validate <directory>/site.toml, with the record of joined machines."""
     directory = Path(directory)
     if check_permissions:
         problems = check_dir(directory)
         if problems:
             raise SiteError(problems)
     data = read_toml(directory / SITE_FILE)
-    return parse(data, known_host=known_host, directory=directory)
+    site = parse(data, known_host=known_host, directory=directory)
+    site.joined = read_joined(directory)
+    return site

@@ -157,7 +157,9 @@ class JoinApplyTest(TempDirTest):
 
     def test_needs_yes(self):
         runner = FakeRunner()
-        self.assertEqual(self.job(runner).apply(ask=lambda p: "no"), 1)
+        job = self.job(runner)
+        job.remember = lambda m: self.fail("recorded without yes")
+        self.assertEqual(job.apply(ask=lambda p: "no"), 1)
         # Only the read-only preflight ran, to show the plan.
         self.assertTrue(runner.calls and all('pass "/dev/net/tun"' in c[2] for c in runner.calls))
 
@@ -176,8 +178,11 @@ class JoinApplyTest(TempDirTest):
 
         runner.run, runner.pipe = fake_run, fake_pipe
         ops = FakeOps()
-        rc = self.job(runner, ops=ops).apply(yes=True)
+        job, recorded = self.job(runner, ops=ops), []
+        job.remember = recorded.append
+        rc = job.apply(yes=True)
         self.assertEqual(rc, 0, "\n".join(self.out))
+        self.assertEqual(recorded, [job.member])
         kinds = []
         for call in runner.calls:
             if call[0] == "upload":
@@ -321,9 +326,11 @@ class JoinApplyTest(TempDirTest):
 
     def test_leftovers_clean(self):
         runner = FakeRunner({**responses(nodes=[]), join.PREAUTH_KEYS_JSON: "[]", join.LEFTOVERS: ""})
-        job = self.job(runner)
+        job, forgotten = self.job(runner), []
+        job.forget = forgotten.append
         self.assertEqual(job.leftovers(), [])
         job.after_rollback()
+        self.assertEqual(forgotten, [job.member])          # the record goes once nothing is left
         self.assertTrue(any(line.startswith("\n✓ Nothing left") for line in self.out), self.out)
         runner.responses[join.LEFTOVERS] = "TN-LEFT /var/lib/tailscale\nTN-LEFT interface tailscale0\n"
         self.assertEqual(job.leftovers(), ["/var/lib/tailscale", "interface tailscale0"])

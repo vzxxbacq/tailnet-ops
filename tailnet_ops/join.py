@@ -14,7 +14,7 @@ import re
 import shlex
 import tarfile
 
-from . import macos, names, pins, render, scripts
+from . import macos, names, pins, render, scripts, targets
 from .procedure import Action, Procedure, Step, StepError, fetch_pinned, sha256_file
 from .site import dns_label, ensure_private_dir, write_private
 
@@ -441,36 +441,39 @@ class LocalOps:
 class Join(Procedure):
     command = "join"
 
-    def __init__(self, site, alias, runner=None, ops=None, out=print):
+    def __init__(self, site, alias=None, runner=None, ops=None, out=print, member=None):
+        """member: a targets.Target; without one, alias is a host that site.toml names."""
         self.site = site
-        self.alias = alias
-        self.subject = alias
-        self.target = alias
-        settings = site.host_settings.get(alias)
-        self.macos = bool(settings and settings.os == "macos")
-        self.local = bool(settings and settings.local)
-        self.personal = site.is_personal(alias)
+        self.member = member or targets.from_site(site, alias)
+        m = self.member
+        self.alias = m.alias          # how the runner reaches it
+        self.label = dns_label(m.name)
+        self.subject = m.name
+        self.target = m.name
+        self.macos = m.os == "macos"
+        self.local = m.local
+        self.personal = m.personal
         # A server's region; for a personal device, the region it starts on.
-        self.region = site.host_region(alias)
+        self.region = site.region(m.region)
         self.regions = [self.region] + ([r for r in site.regions.values() if r.name != self.region.name]
                                         if self.personal else [])
-        self.tags = site.host_tags(alias)
-        self.port = (settings.tailscale_port if settings and settings.tailscale_port
-                     else pins.DEFAULT_TAILSCALE_PORT)
-        self.netfilter_mode = settings.netfilter_mode if settings else None
+        self.tags = [] if self.personal else site.host_tags(self.alias, self.region)
+        self.port = m.port or pins.DEFAULT_TAILSCALE_PORT
+        self.netfilter_mode = None if self.macos else m.netfilter_mode
         self.lines_here = render.line_peers(site, self.region)
         self.accept_routes = self.routes_in(self.region)
-        self.dns_setting = settings.accept_dns if settings else None
+        self.dns_setting = m.accept_dns
         self.control = self.region.control_host
         self.runner = runner
         self.out = out
         self.ops = ops or LocalOps(site, out)
-        self.mark = marker(self.region, alias, self.personal)
+        self.mark = marker(self.region, m.name, self.personal)
         logins = [r.server_url for r in self.regions]
         if self.macos:
-            self.prelude = macos.prelude(self.mark, alias, logins, self.port, f"tailnet-ops-{slug(site.name)}-ca.crt")
+            self.prelude = macos.prelude(self.mark, m.name, logins, self.port, f"tailnet-ops-{slug(site.name)}-ca.crt")
         else:
-            self.prelude = host_prelude(site, alias, self.port, logins, self.mark)
+            self.prelude = host_prelude(site, m.name, self.port, logins, self.mark)
+        self.remember = self.forget = None   # set by the CLI: record the join, drop the record
         self.control_prelude = scripts.control_prelude(site, self.region)
         self.facts = {}
         if not self.tags and not self.personal:
@@ -550,10 +553,14 @@ class Join(Procedure):
         return f"accept-routes on ({'; '.join(parts)})" if parts else "accept-routes off"
 
     def region_reason(self):
+        if self.alias == self.region.control_host:
+            return "its control host"
+        if self.alias == self.region.check_from:
+            return "its checker host"
         h = self.site.host_settings.get(self.alias)
-        if h and h.region:
+        if h and h.region == self.region.name:
             return f"[hosts.{self.alias}] region"
-        return "its control host" if self.alias == self.region.control_host else "its checker host"
+        return "chosen"
 
     def _run_binaries(self):
         if self.macos:
@@ -604,7 +611,7 @@ class Join(Procedure):
         return self.macos or self.facts.get("resolved") == "yes"
 
     def _argv(self, region, verb="up"):
-        return up_argv(region, self.alias, None if self.macos else self.netfilter_mode, self.routes_in(region),
+        return up_argv(region, self.label, None if self.macos else self.netfilter_mode, self.routes_in(region),
                        self.accept_dns, self.ts_bin, verb, region.name if self.personal else None)
 
     def _run_join(self):
@@ -683,9 +690,9 @@ class Join(Procedure):
             problems.append(f"preferred DERP region is {derp}, expected {self.region.derp_region_id}")
         for r in self.regions:
             mine = self._mine(self._nodes(r))
-            self.out(f"    {r.control_host} lists {len(mine)} node(s) named {dns_label(self.alias)}")
+            self.out(f"    {r.control_host} lists {len(mine)} node(s) named {self.label}")
             if len(mine) != 1:
-                problems.append(f"{r.control_host} should list exactly one node named {dns_label(self.alias)}")
+                problems.append(f"{r.control_host} should list exactly one node named {self.label}")
         if self.accept_routes and state == "Running" and v4:
             problems += self._check_across(v4[0])
         if problems:
@@ -732,7 +739,7 @@ class Join(Procedure):
         return _json(self._on_control(NODES_JSON, echo=False, region=region).output or "[]", "headscale nodes list") or []
 
     def _mine(self, nodes):
-        return [n for n in nodes if str(n.get("given_name", "")).lower() == dns_label(self.alias)]
+        return [n for n in nodes if str(n.get("given_name", "")).lower() == self.label]
 
     def _stale_keys(self, nodes, region=None):
         """Pre-auth keys like this host's (its tags; for a personal device, the owner's and untagged)
@@ -754,7 +761,7 @@ class Join(Procedure):
             nodes = self._nodes(r)
             mine = self._mine(nodes)
             if not mine:
-                self.out(f"    {r.control_host} lists no node named {dns_label(self.alias)}")
+                self.out(f"    {r.control_host} lists no node named {self.label}")
             for n in mine:
                 self.out(f"    deleting node {n.get('id')} ({n.get('given_name')}) on {r.control_host}")
                 self._on_control(delete_node(n.get("id")), region=r)
@@ -797,6 +804,12 @@ class Join(Procedure):
             self.out(f"\n✓ Nothing left: no Tailscale files, {'launchd job' if self.macos else 'unit'}, "
                      f"{'' if self.macos else 'interface '}or process on {self.alias}, "
                      f"and no node or key for it in Headscale on {controls}.")
+            if self.forget:
+                self.forget(self.member)
+
+    def before_steps(self):
+        if self.remember:
+            self.remember(self.member)
 
     def run_rollback(self, step):
         if step.number == 3:
@@ -916,7 +929,7 @@ class Join(Procedure):
                            set_prefs(self.accept_routes, self.accept_dns), "host", True),
                 ],
                 rollback=LOGOUT,
-                rollback_note=f"log out, then delete the node named {dns_label(a)} on {self.control} "
+                rollback_note=f"log out, then delete the node named {self.label} on {self.control} "
                               "(`headscale nodes delete -i <id> --force`) and its used or expired pre-auth keys "
                               "(`headscale preauthkeys delete -i <id>`)",
                 run=self._run_join, undo=self._undo_join, brief="Join with a one-time tagged key",
@@ -945,7 +958,7 @@ class Join(Procedure):
              f"is skipped. Ends on {r.name}."],
             actions,
             rollback=LOGOUT,
-            rollback_note=f"log out of every profile, then delete the node named {dns_label(a)} in each region's "
+            rollback_note=f"log out of every profile, then delete the node named {self.label} in each region's "
                           "Headscale and its used or expired pre-auth keys",
             run=self._run_join, undo=self._undo_join, brief=f"Join {regions} as {owner}, a profile each",
             undo_brief=f"log out, delete the nodes and keys on {controls}",
@@ -959,7 +972,7 @@ class Join(Procedure):
             Step(
                 6, "Names",
                 [f"Give every region that reaches {r.name} through a line a DNS name for {a}:",
-                 f"{dns_label(a)}.{r.base_domain} at its alias address there. Names of the other regions' hosts",
+                 f"{self.label}.{r.base_domain} at its alias address there. Names of the other regions' hosts",
                  "are updated the same way; Headscale reloads them by itself."],
                 [Action(self.control, "list nodes on each control host, write its extra records file",
                         names.write([{"name": "<name>.<suffix>", "type": "A", "value": "<alias address>"}]),
@@ -974,7 +987,7 @@ class Join(Procedure):
                  + (f"no tags, a profile for each of {', '.join(x.name for x in self.regions)},"
                     if self.personal else f"tags {', '.join(self.tags)},"),
                  f"and prefers DERP region {r.derp_region_id}. On {controls}: exactly one node named "
-                 f"{dns_label(a)}. Read-only."],
+                 f"{self.label}. Read-only."],
                 [
                     Action(a, "status and netcheck", STATUS_JSON + NETCHECK_JSON, "host", True),
                     Action(controls, "list nodes", NODES_JSON, "control", True),
@@ -1004,7 +1017,7 @@ class Join(Procedure):
                f"  identity      user {owner}, no tags; one profile per region, switch with "
                f"`sudo tailscale switch <region>`"]
         for x in self.regions:
-            out.append(f"  {x.name:<12}  tailnet {x.ipv4_prefix}, name {dns_label(a)}.{x.name}.{x.base_domain}")
+            out.append(f"  {x.name:<12}  tailnet {x.ipv4_prefix}, name {self.label}.{x.name}.{x.base_domain}")
         return out
 
     def summary_header(self, checks=None):
@@ -1089,10 +1102,10 @@ class Join(Procedure):
     @property
     def fqdn(self):
         """The name tn shows: with the region; the short <name>.<suffix> works too."""
-        return f"{dns_label(self.alias)}.{self.region.name}.{self.region.base_domain}"
+        return f"{self.label}.{self.region.name}.{self.region.base_domain}"
 
     def done_message(self):
-        label = dns_label(self.alias)
+        label = self.label
         if self.personal:
             others = " ".join(f"`sudo tailscale switch {x.name}`" for x in self.regions)
             return (f"{self.alias} joined {', '.join(x.name for x in self.regions)} as a personal device of "
