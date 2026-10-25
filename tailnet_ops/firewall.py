@@ -80,11 +80,12 @@ def blocking_targets(nft_json, legacy_forward="", own_tables=()):
 
 
 def allow_script(line_name, iface, targets, mark=None):
-    """A self-contained script: `add` (idempotent), `del`, `check`. Run by wg-quick and a timer.
-    `mark` becomes the second line, which tells rollback the file is ours."""
+    """A self-contained script: `add` (idempotent), `del`, `check`, and `dry` (each insert checked by
+    `nft -c`, nothing applied). Run by wg-quick and a timer. `mark` becomes the second line, which tells
+    rollback the file is ours."""
     comment = f"tailnet-ops line={line_name}"
     pairs = [(iface, TAILSCALE), (TAILSCALE, iface)]
-    add, delete, check = [], [], []
+    add, delete, check, dry = [], [], [], []
     for t in targets:
         if t.kind == "nft":
             where = f"{t.family} {shlex.quote(t.table)} {shlex.quote(t.chain)}"
@@ -92,7 +93,10 @@ def allow_script(line_name, iface, targets, mark=None):
             add.append(f"if nft list chain {where} >/dev/null 2>&1 && ! nft list chain {where} | grep -qF "
                        f"{shlex.quote(comment)}; then")
             for i, o in pairs:
-                add.append(f'  nft insert rule {where} iifname "{i}" oifname "{o}" counter accept comment "{comment}"')
+                # One argument, so the double quotes around names and the comment reach nft.
+                rule = f'insert rule {t.family} {t.table} {t.chain} iifname "{i}" oifname "{o}" counter accept comment "{comment}"'
+                add.append(f"  nft {shlex.quote(rule)}")
+                dry.append(f"nft -c {shlex.quote(rule)}")
             add.append("fi")
             delete.append(f"for h in $(nft -a list chain {where} 2>/dev/null | grep -F {shlex.quote(comment)} "
                           "| sed -n 's/.*# handle \\([0-9]*\\).*/\\1/p'); do")
@@ -105,6 +109,7 @@ def allow_script(line_name, iface, targets, mark=None):
                 check.append(f"{cmd} -C {t.chain} {spec} 2>/dev/null")
                 add.append(f"{cmd} -C {t.chain} {spec} 2>/dev/null || {cmd} -I {t.chain} 1 {spec}")
                 delete.append(f"while {cmd} -D {t.chain} {spec} 2>/dev/null; do :; done")
+            dry.append(f"command -v {cmd} >/dev/null")
     body = [
         "#!/bin/sh",
         *([f"# {mark}"] if mark else []),
@@ -122,7 +127,10 @@ def allow_script(line_name, iface, targets, mark=None):
         "check)",
         *[f"  {x} || exit 1" for x in check],
         "  ;;",
-        "*) echo \"usage: $0 add|del|check\" >&2; exit 2 ;;",
+        "dry)",
+        *[f"  {x} || exit 1" for x in dry],
+        "  ;;",
+        "*) echo \"usage: $0 add|del|check|dry\" >&2; exit 2 ;;",
         "esac",
     ]
     return "\n".join(body) + "\n"

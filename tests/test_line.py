@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 
@@ -97,12 +98,34 @@ class FirewallTest(TempDirTest):
         targets = firewall.blocking_targets(NFT_POLICY_DROP, "-P FORWARD DROP\n")
         text = firewall.allow_script("line1", "wg-line1", targets, mark="tailnet-ops line=line1 side=initiator")
         self.assertEqual(text.splitlines()[1], "# tailnet-ops line=line1 side=initiator")
-        self.assertIn('nft insert rule inet phones forward iifname "wg-line1" oifname "tailscale0" counter accept '
-                      'comment "tailnet-ops line=line1"', text)
+        self.assertIn('nft \'insert rule inet phones forward iifname "wg-line1" oifname "tailscale0" counter accept '
+                      'comment "tailnet-ops line=line1"\'', text)
         self.assertIn('iifname "tailscale0" oifname "wg-line1"', text)
         self.assertIn("iptables-legacy -I FORWARD 1 -i wg-line1 -o tailscale0", text)
         p = subprocess.run(["sh", "-n"], input=text, capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_rules_reach_nft_as_one_argument(self):
+        """The shell must not split the rule: nft needs the quoted comment intact."""
+        targets = firewall.blocking_targets(NFT_POLICY_DROP, "")
+        script = self.tmp / "allow.sh"
+        script.write_text(firewall.allow_script("line1", "wg-line1", targets))
+        stubs = self.tmp / "stubs"
+        stubs.mkdir()
+        log = self.tmp / "nft.log"
+        (stubs / "nft").write_text(
+            '#!/bin/sh\n[ "$1" = list ] && exit 0\nprintf \'%s|\' "$#" "$@" >> "$NFT_LOG"\necho >> "$NFT_LOG"\n')
+        (stubs / "nft").chmod(0o755)
+        env = {**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}", "NFT_LOG": str(log)}
+        for mode in ("add", "dry"):
+            p = subprocess.run(["sh", str(script), mode], capture_output=True, text=True, env=env)
+            self.assertEqual(p.returncode, 0, p.stderr)
+        calls = log.read_text().splitlines()
+        self.assertEqual(len(calls), 4)
+        want = ('insert rule inet phones forward iifname "wg-line1" oifname "tailscale0" counter accept '
+                'comment "tailnet-ops line=line1"')
+        self.assertEqual(calls[0], f"1|{want}|")
+        self.assertEqual(calls[2], f"2|-c|{want}|")
 
 
 class LinePlanTest(TempDirTest):
@@ -197,7 +220,8 @@ class LineApplyTest(TempDirTest):
         self.assertIn(f"PublicKey = {PUB_I}", ends["ovs-line"])
         self.assertIn(f"PublicKey = {PUB_R}", ends["cn-gateway"])
         self.assertIn("snat ip to 100.64.2.4", ends["ovs-line"])
-        self.assertIn("nft insert rule inet phones forward", ends["cn-gateway"])
+        self.assertIn("nft 'insert rule inet phones forward", ends["cn-gateway"])
+        self.assertIn('"$ALLOW" dry || die', ends["cn-gateway"])
         self.assertEqual(runner.prefs, {"cn-gateway": ["10.255.2.0/24"], "ovs-line": ["10.255.1.0/24"]})
         approvals = [s for _r, h, s, _a, _p in runner.calls if "approve-routes" in s]
         self.assertEqual(len(approvals), 2)

@@ -257,6 +257,7 @@ changed=no
     body += _put("NFT_FILE", nft_text)
     body += 'nft -c -f "$NFT_FILE" || die "the NAT rules do not load"\n'
     body += _put("ALLOW", allow_text, "0700")
+    body += '"$ALLOW" dry || die "the accept rules do not load (checked with nft -c; nothing applied)"\n'
     body += _put("CONF", conf_text)
     body += 'KEEP_SERVICE="$KEEP_DIR/$KEEP.service"\nKEEP_TIMER="$KEEP_DIR/$KEEP.timer"\n'
     body += _put("KEEP_SERVICE", service, "0644") + _put("KEEP_TIMER", timer, "0644")

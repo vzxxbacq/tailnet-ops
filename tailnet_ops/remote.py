@@ -71,13 +71,15 @@ class SSHRunner:
         for line in p.stdout:
             line = line.rstrip("\n")
             lines.append(line)
-            self._log(line)
             if line.startswith("TN-BEGIN "):
                 hidden = True
             elif line.startswith("TN-END "):
                 hidden = False
-            elif echo and not hidden and not line.startswith("TN-FACT "):
+            # Printed lines reach the log through out(); log the rest directly.
+            if echo and not hidden and not line.startswith(("TN-FACT ", "TN-BEGIN ", "TN-END ")):
                 self.out(f"    {line}")
+            else:
+                self._log(line)
         rc = p.wait()
         result = Result(rc, "\n".join(lines) + "\n")
         if check and rc != 0:
