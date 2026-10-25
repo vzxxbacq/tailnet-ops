@@ -104,11 +104,15 @@ class Procedure:
     def plan_id(self):
         return self.plan_text()[1]
 
-    def summary_text(self):
+    def summary_header(self, checks=None):
+        return self.header()
+
+    def summary_text(self, checks=None):
         """The short plan: what changes, step by step, and how each step is undone."""
         steps = self.steps()
         width = max(len(self._brief(s)) for s in steps)
-        out = [f"tn {self.command} plan {self.subject} · plan id {self.plan_id()}", "", self.header(), "",
+        out = [f"tn {self.command} plan {self.subject} · plan id {self.plan_id()}", "",
+               self.summary_header(checks), "",
                f"     {'Step'.ljust(width)}  Undo"]
         for s in steps:
             undo = s.undo_brief or ("—" if not s.rollback and s.read_only else s.rollback_note)

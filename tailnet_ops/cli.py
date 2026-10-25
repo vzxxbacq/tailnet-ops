@@ -91,11 +91,11 @@ def _deployment(args, kind):
     return Deployment(site, args.region, runner=runner, out=console.out), console
 
 
-def show_plan(procedure, console, full):
+def show_plan(procedure, console, full, checks=None):
     """Print the short plan (or the full one with --full); the log always gets the full plan."""
     text, _digest = procedure.plan_text()
     console.log(text)
-    console.show(text if full else procedure.summary_text())
+    console.show(text if full else procedure.summary_text(checks))
     console.out(f"Full plan saved to {console.log_path}. Nothing was changed.")
     return 0
 
@@ -125,7 +125,11 @@ def cmd_join(args):
     try:
         job = Join(site, args.host, runner=runner, out=console.out)
         if args.action == "plan":
-            return show_plan(job, console, args.full)
+            checks = None if args.offline else job.check()
+            if checks is not None:
+                console.log(f"checks: {checks}")
+            show_plan(job, console, args.full, checks)
+            return 1 if checks and checks["fails"] else 0
         if args.action == "apply":
             return job.apply(yes=args.yes)
         if args.action == "rollback":
@@ -271,6 +275,7 @@ def build_parser():
         c.add_argument("host", help="SSH alias")
         if action == "plan":
             c.add_argument("--full", action="store_true", help="print every remote script and rollback")
+            c.add_argument("--offline", action="store_true", help="skip the read-only checks over SSH")
         if action in ("apply", "rollback"):
             c.add_argument("--yes", action="store_true", help="do not ask")
         c.set_defaults(func=cmd_join)

@@ -4,6 +4,7 @@ import os
 from unittest import mock
 
 from tailnet_ops import cli, init, remote
+from tailnet_ops import site as sitemod
 from tailnet_ops.remote import Result
 from tests import test_init
 from tests.helpers import TempDirTest
@@ -62,11 +63,20 @@ class CliTest(TempDirTest):
         self.assertIn("Step 8/8  Verify", out)
 
     def test_join_plan(self):
-        rc, out, err = run_cli("join", "plan", "cn-probe", "--site", str(self.site))
+        rc, out, err = run_cli("join", "plan", "cn-probe", "--offline", "--site", str(self.site))
         self.assertEqual(rc, 0, err)
-        self.assertIn("cn-probe joins region cn as cn-probe.cn.tailnet.internal", out)
+        self.assertIn("cn-probe → region cn (its checker host): tailnet 100.64.0.0/16", out)
+        self.assertIn("checks        not run (--offline)", out)
         self.assertIn("  5  Join with a one-time tagged key  log out, delete the node on cn-control", out)
-        rc, _out, err = run_cli("join", "plan", "nowhere", "--site", str(self.site))
+        ready = "TN-FACT os=Ubuntu 24.04 LTS\nTN-FACT machine=x86_64\nTN-FACT arch=amd64\nTN-FACT port=free\nTN-FACT login=ok\n"
+        with mock.patch.object(remote.SSHRunner, "run", lambda *a, **k: Result(0, ready)):
+            (self.site / "pki").mkdir(mode=0o700)
+            sitemod.write_private(self.site / "pki" / "ca.crt", "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n")
+            rc, out, err = run_cli("join", "plan", "cn-probe", "--site", str(self.site))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("✓ cn-probe reaches it over TLS", out)
+        self.assertIn("✓ Ready: every read-only check on cn-probe passed.", out)
+        rc, _out, err = run_cli("join", "plan", "nowhere", "--offline", "--site", str(self.site))
         self.assertEqual(rc, 1)
         self.assertIn("not in any region", err)
 

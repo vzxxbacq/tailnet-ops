@@ -94,6 +94,7 @@ flag() { printf '  FAIL  %s\n' "$*"; fail=1; }
 
 os=$( (. /etc/os-release && echo "$PRETTY_NAME") 2>/dev/null || echo unknown)
 if [ "$(uname -s)" = Linux ]; then pass "OS: $os"; else flag "OS: not Linux ($os)"; fi
+echo "TN-FACT os=$os"
 case "$(uname -m)" in
   x86_64) arch=amd64 ;;
   aarch64|arm64) arch=arm64 ;;
@@ -101,6 +102,7 @@ case "$(uname -m)" in
 esac
 if [ -n "$arch" ]; then pass "arch: $(uname -m)"; else flag "arch: $(uname -m) has no pinned Tailscale build"; fi
 echo "TN-FACT arch=${arch:-none}"
+echo "TN-FACT machine=$(uname -m)"
 if [ "$(id -u)" = 0 ]; then pass "running as root"; else flag "not running as root"; fi
 if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then pass "systemd"; else flag "systemd is not running"; fi
 if [ -c /dev/net/tun ]; then pass "/dev/net/tun"; else flag "/dev/net/tun is missing"; fi
@@ -111,9 +113,10 @@ done
 if [ -z "$missing" ]; then pass "tools: curl sha256sum install update-ca-certificates ip ss"; else flag "missing tools:$missing"; fi
 
 lines=$(ss -H -lunp "sport = :$TS_PORT" 2>/dev/null || true)
-if [ -z "$lines" ]; then pass "udp/$TS_PORT free (Tailscale)"
-elif ! printf '%s\n' "$lines" | grep -qv '"tailscaled"' && ours_unit; then pass "udp/$TS_PORT already used by our tailscaled"
-else flag "udp/$TS_PORT is in use: $(printf '%s' "$lines" | tr -s ' ' | tr '\n' ' ' | cut -c1-160)"; fi
+if [ -z "$lines" ]; then pass "udp/$TS_PORT free (Tailscale)"; echo "TN-FACT port=free"
+elif ! printf '%s\n' "$lines" | grep -qv '"tailscaled"' && ours_unit; then
+  pass "udp/$TS_PORT already used by our tailscaled"; echo "TN-FACT port=ours"
+else flag "udp/$TS_PORT is in use: $(printf '%s' "$lines" | tr -s ' ' | tr '\n' ' ' | cut -c1-160)"; echo "TN-FACT port=busy"; fi
 
 for p in /usr/bin/tailscale /usr/sbin/tailscaled; do
   if [ -e "$p" ]; then flag "another Tailscale is installed at $p"; fi
@@ -138,10 +141,11 @@ if ip link show tailscale0 >/dev/null 2>&1 && ! ours_unit; then flag "a tailscal
 if pgrep -x tailscaled >/dev/null && ! ours_unit; then flag "a tailscaled process runs outside our unit"; fi
 
 if out=$(curl -fsS --max-time 10 --cacert <(ca) "$LOGIN/health" 2>&1); then
-  pass "reaches $LOGIN over TLS with the site CA"
+  pass "reaches $LOGIN over TLS with the site CA"; echo "TN-FACT login=ok"
 else
-  flag "cannot reach $LOGIN with the site CA: $out"
+  flag "cannot reach $LOGIN with the site CA: $out"; echo "TN-FACT login=fail"
 fi
+if ours_unit; then echo "TN-FACT joined=ours"; else echo "TN-FACT joined=no"; fi
 
 if [ "$fail" != 0 ]; then die "preflight failed; nothing was changed"; fi
 echo "preflight passed; nothing was changed"
@@ -397,6 +401,26 @@ class Join(Procedure):
     def _run_preflight(self):
         self.facts.update(self._host(preflight(self._ca())).facts())
 
+    def check(self):
+        """Run the read-only preflight and return {"facts", "fails"} for the short plan."""
+        ca = self.ops.ca_pem()
+        if ca is None:
+            return {"facts": {}, "fails": [f"no site CA yet; run `tn control apply {self.region.name}` first"]}
+        result = self.runner.run(self.alias, scripts.wrap(self.prelude, preflight(ca)), privileged=True,
+                                 check=False, echo=False)
+        fails = [line.split("FAIL", 1)[1].strip() for line in result.output.splitlines()
+                 if line.lstrip().startswith("FAIL ")]
+        if result.rc == 255 or (result.rc != 0 and not fails and "TN-FACT arch=" not in result.output):
+            last = result.output.strip().splitlines()[-1:] or ["no answer"]
+            fails = [f"cannot log in over SSH as root: {last[0]}"]
+        return {"facts": result.facts(), "fails": fails}
+
+    def region_reason(self):
+        h = self.site.host_settings.get(self.alias)
+        if h and h.region:
+            return f"[hosts.{self.alias}] region"
+        return "its control host" if self.alias == self.region.control_host else "its checker host"
+
     def _run_binaries(self):
         arch = self.facts.get("arch")
         if arch not in pins.TAILSCALE_BIN_SHA256:
@@ -563,6 +587,41 @@ class Join(Procedure):
         return steps
 
     # --- printing ---------------------------------------------------------------------
+
+    def summary_header(self, checks=None):
+        r, a = self.region, self.alias
+        facts = checks["facts"] if checks else {}
+        ok, bad = "✓", "✗"
+
+        def mark(good, yes, no):
+            if checks is None or not facts:
+                return ""
+            return f"  {ok} {yes}" if good else f"  {bad} {no}"
+
+        port = facts.get("port")
+        nf = self.netfilter_mode or "on (tailscaled adds its own rules)"
+        out = [
+            f"{a} → region {r.name} ({self.region_reason()}): tailnet {r.ipv4_prefix}, "
+            f"name {dns_label(a)}.{r.base_domain}",
+            f"  login server  {r.server_url}"
+            + mark(facts.get("login") == "ok", f"{a} reaches it over TLS", f"{a} cannot reach it"),
+            f"  tags          {', '.join(self.tags)}",
+            f"  tailscaled    udp/{self.port}, no log upload"
+            + mark(port in ("free", "ours"), "port free" if port == "free" else "already ours", "port in use"),
+            f"  options       accept-dns off, accept-routes off, netfilter {nf}",
+        ]
+        if facts:
+            out.append(f"  host          {facts.get('os', '?')}, {facts.get('machine', '?')}"
+                       + ("  (already joined by tailnet-ops)" if facts.get("joined") == "ours" else ""))
+        out += [f"  adds          tailscale, tailscaled, tailscaled.service, {TS_STATE}, the site CA",
+                "  leaves alone  everything else"]
+        if checks is None:
+            out.append("  checks        not run (--offline)")
+        elif checks["fails"]:
+            out += ["", f"Not ready to join ({len(checks['fails'])}):"] + [f"  {bad} {f}" for f in checks["fails"]]
+        else:
+            out += ["", f"{ok} Ready: every read-only check on {a} passed."]
+        return "\n".join(out)
 
     def header(self):
         r, a = self.region, self.alias

@@ -95,6 +95,45 @@ class JoinPlanTest(TempDirTest):
         self.assertNotIn("--advertise-tags", text)
         self.assertEqual(digest, join.Join(self.site, "ovs-control", ops=FakeOps()).plan_id())
 
+    def test_check_reports_what_matters(self):
+        ok = "TN-FACT os=Ubuntu 24.04 LTS\nTN-FACT machine=x86_64\nTN-FACT port=free\nTN-FACT login=ok\n"
+        job = join.Join(self.site, "cn-probe", runner=FakeRunner({"TN-FACT os=": ok}), ops=FakeOps())
+        checks = job.check()
+        self.assertEqual(checks["fails"], [])
+        text = job.summary_text(checks)
+        self.assertIn("✓ cn-probe reaches it over TLS", text)
+        self.assertIn("✓ port free", text)
+        self.assertIn("host          Ubuntu 24.04 LTS, x86_64", text)
+
+    def test_check_lists_failures(self):
+        out = ("TN-FACT os=Ubuntu\nTN-FACT arch=amd64\nTN-FACT port=busy\nTN-FACT login=fail\n"
+               "  FAIL  udp/41641 is in use: x\n  FAIL  cannot reach https://198.51.100.10:9443 with the site CA: y\n")
+
+        class Failing(FakeRunner):
+            def run(self, host, script, **kw):
+                self.calls.append(("run", host, script, (), kw.get("privileged")))
+                return remote.Result(1, out)
+
+        job = join.Join(self.site, "cn-probe", runner=Failing(), ops=FakeOps())
+        checks = job.check()
+        self.assertEqual(len(checks["fails"]), 2)
+        text = job.summary_text(checks)
+        self.assertIn("✗ cn-probe cannot reach it", text)
+        self.assertIn("✗ port in use", text)
+        self.assertIn("Not ready to join (2):", text)
+
+    def test_check_without_ssh_or_ca(self):
+        from tailnet_ops.remote import Result
+
+        class NoSSH(FakeRunner):
+            def run(self, host, script, **kw):
+                return Result(255, "ssh: Could not resolve hostname cn-probe\n")
+
+        checks = join.Join(self.site, "cn-probe", runner=NoSSH(), ops=FakeOps()).check()
+        self.assertEqual(checks["fails"], ["cannot log in over SSH as root: ssh: Could not resolve hostname cn-probe"])
+        checks = join.Join(self.site, "cn-probe", runner=NoSSH(), ops=FakeOps(ca=None)).check()
+        self.assertIn("no site CA yet", checks["fails"][0])
+
     def test_host_settings(self):
         site = self.load_site(example_text(("tailscale_port = 41641", "tailscale_port = 20002")), name="b")
         job = join.Join(site, "cn-control", ops=FakeOps())
