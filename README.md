@@ -30,6 +30,10 @@
 | `./tn join apply <host>` | 装 Tailscale、信任站点 CA、用一次性带标签密钥加入本区，要输入 `yes` |
 | `./tn join verify <host>` | 只读检查：已连上、地址在本区网段、标签正确、用本区 DERP |
 | `./tn join rollback <host>` | 退出 tailnet 并删掉入网时加的东西，要输入 `yes` |
+| `./tn line plan <line>` | 只读检查专线两端，再列出步骤和撤销方法 |
+| `./tn line apply <line>` | 两端各生成私钥，发起方主动建 WireGuard 隧道并保活，要输入 `yes` |
+| `./tn line verify <line>` | 只读：两端互相 ping 隧道地址 |
+| `./tn line rollback <line>` | 停掉隧道、删掉两端的配置和私钥，要输入 `yes` |
 | `./tn status <region>` | 列出节点 |
 | `make check` | 离线测试，加上对工作区和全部历史的隐私检查 |
 

@@ -92,6 +92,18 @@ class Line:
     one_way: bool
     keepalive_seconds: int
     priority: int
+    port: int = None             # UDP port of the tunnel on the responder's entry address
+    tunnel_ipv4: str = None      # a /30: .1 is the initiator's tunnel address, .2 the responder's
+
+    @property
+    def interface(self):
+        return f"wg-{self.name}"[:15]
+
+    @property
+    def tunnel_addresses(self):
+        """(initiator, responder) tunnel addresses."""
+        hosts = list(ipaddress.IPv4Network(self.tunnel_ipv4).hosts())
+        return str(hosts[0]), str(hosts[1])
 
 
 @dataclass
@@ -259,6 +271,7 @@ REGION_KEYS = {
 REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int}
 HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str, "region": str, "tags": list}
 NETFILTER_MODES = ("on", "nodivert", "off")
+LINE_OPTIONAL = {"port": int, "tunnel_ipv4": str}
 LINE_KEYS = {
     "name": str,
     "initiator": str,
@@ -426,7 +439,7 @@ def parse(data, known_host=None, directory=None):
         if not isinstance(table, dict):
             problems.append(f"{where}: not a table")
             continue
-        ln = _typed(where, table, LINE_KEYS, {}, problems)
+        ln = _typed(where, table, LINE_KEYS, LINE_OPTIONAL, problems)
         if len(ln) < len(LINE_KEYS):
             continue
         where = f"lines.{ln['name']}"
@@ -443,6 +456,18 @@ def parse(data, known_host=None, directory=None):
             problems.append(f"{where}: initiator and responder must differ")
         _ipv4(f"{where}.responder_entry_ipv4", ln["responder_entry_ipv4"], problems)
         _ipv4(f"{where}.initiator_public_ipv4", ln["initiator_public_ipv4"], problems)
+        if "port" in ln:
+            _port(f"{where}.port", ln["port"], problems)
+        if "tunnel_ipv4" in ln:
+            net = _net(f"{where}.tunnel_ipv4", ln["tunnel_ipv4"], problems)
+            if net is not None:
+                if net.prefixlen != 30:
+                    problems.append(f"{where}.tunnel_ipv4: use a /30: the initiator takes .1, the responder .2")
+                if not net.is_private or net.overlaps(CGNAT):
+                    problems.append(f"{where}.tunnel_ipv4: use a private range outside 100.64.0.0/10")
+                for other in lines:
+                    if other.tunnel_ipv4 and net.overlaps(ipaddress.IPv4Network(other.tunnel_ipv4)):
+                        problems.append(f"{where}.tunnel_ipv4: overlaps line {other.name}")
         if not 1 <= ln["keepalive_seconds"] <= 3600:
             problems.append(f"{where}.keepalive_seconds: use 1-3600")
         lines.append(Line(**ln))

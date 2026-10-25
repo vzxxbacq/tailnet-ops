@@ -8,6 +8,7 @@ from pathlib import Path
 from . import VERSION, init, remote, site as sitemod
 from .control import Deployment
 from .join import Join
+from .line import Line
 from .procedure import StepError
 from .redact import Redactor, identity
 
@@ -119,11 +120,20 @@ def cmd_control(args):
 
 
 def cmd_join(args):
+    return run_checked(args, "join", args.host, lambda site, runner, out: Join(site, args.host, runner=runner, out=out))
+
+
+def cmd_line(args):
+    return run_checked(args, "line", args.line, lambda site, runner, out: Line(site, args.line, runner=runner, out=out))
+
+
+def run_checked(args, kind, name, make):
+    """plan (with read-only checks unless --offline), apply, verify and rollback for join and line."""
     site = load_site(args)
-    console = Console(Redactor(site) if args.redact else identity, run_log(site, f"join-{args.action}", args.host))
+    console = Console(Redactor(site) if args.redact else identity, run_log(site, f"{kind}-{args.action}", name))
     runner = remote.SSHRunner(out=console.out, log=console.log)
     try:
-        job = Join(site, args.host, runner=runner, out=console.out)
+        job = make(site, runner, console.out)
         if args.action == "plan":
             checks = None if args.offline else job.check()
             if checks is not None:
@@ -136,7 +146,7 @@ def cmd_join(args):
             return job.rollback(yes=args.yes)
         if args.action == "verify":
             return job.verify()
-        if args.action == "preflight":
+        if args.action == "preflight" and hasattr(job, "preflight"):
             return job.preflight()
     finally:
         console.close()
@@ -279,6 +289,23 @@ def build_parser():
         if action in ("apply", "rollback"):
             c.add_argument("--yes", action="store_true", help="do not ask")
         c.set_defaults(func=cmd_join)
+
+    p = sub.add_parser("line", help="the WireGuard tunnel of a dedicated line")
+    s = p.add_subparsers(dest="action", required=True)
+    for action, help_text in (
+        ("plan", "check both ends (read-only), then print the steps and how each is undone"),
+        ("apply", "make keys, start the tunnel on both ends; asks for yes"),
+        ("verify", "ping across the tunnel both ways (read-only)"),
+        ("rollback", "stop the tunnel and remove its files on both ends; asks for yes"),
+    ):
+        c = s.add_parser(action, parents=[common], help=help_text)
+        c.add_argument("line", help="line name from site.toml")
+        if action == "plan":
+            c.add_argument("--full", action="store_true", help="print every remote script and rollback")
+            c.add_argument("--offline", action="store_true", help="skip the read-only checks over SSH")
+        if action in ("apply", "rollback"):
+            c.add_argument("--yes", action="store_true", help="do not ask")
+        c.set_defaults(func=cmd_line)
 
     p = sub.add_parser("status", parents=[common], help="list the nodes of a region (read-only)")
     p.add_argument("region")

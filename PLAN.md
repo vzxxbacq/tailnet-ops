@@ -38,7 +38,7 @@ The first site is the owner's. Its configuration and notes are in the owner's si
 - `[site]`;
 - one `[regions.<name>]` per tailnet;
 - optional `[hosts.<alias>]` with `tailscale_port` (a fixed UDP port for tailscaled), `netfilter_mode`, `region` (for hosts that neither control nor check a region) and `tags` (default: the region's `-server` tag, plus `-gateway` for a line initiator and `-border` for a line responder), used when a host joins;
-- optional `[[lines]]`, each with `initiator`, `responder`, `responder_entry_ipv4` and `one_way`.
+- optional `[[lines]]`, each with `initiator`, `responder`, `responder_entry_ipv4`, `one_way`, and for the tunnel `port` (UDP on the entry) and `tunnel_ipv4` (a private /30: .1 initiator, .2 responder).
 
 **Ask only what SSH cannot tell.** The tool derives the following over SSH and never asks for it:
 - OS, architecture, root or sudo, systemd;

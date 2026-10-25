@@ -193,6 +193,8 @@ def ask_answers(asker):
             "responder": asker.ask(f"  {name}: responder (SSH alias)", None, _check_alias),
             "responder_entry_ipv4": asker.ask(f"  {name}: responder's entry address for this line", None, _check_ipv4),
             "one_way": asker.yes_no(f"  {name}: one-way (only the initiator may start connections)?", True),
+            "port": int(asker.ask(f"  {name}: UDP port the line passes to the entry, for the tunnel", None,
+                                  lambda v: None if v.isdigit() and 1 <= int(v) <= 65535 else "enter a port number")),
         })
     return a
 
@@ -385,6 +387,8 @@ def derive(answers, facts, hostnames):
             "one_way": bool(la["one_way"]),
             "keepalive_seconds": 25,
             "priority": 10 * i,
+            "port": la["port"],
+            "tunnel_ipv4": f"10.255.{i - 1}.0/30",
         })
     hosts = {}
     for alias in hosts_in(answers):

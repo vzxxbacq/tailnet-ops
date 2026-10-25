@@ -57,4 +57,6 @@ responder_entry_ipv4 = "203.0.113.30"
 initiator_public_ipv4 = "198.51.100.40"
 one_way = true
 keepalive_seconds = 25
+port = 11011                       # UDP port of the tunnel on the responder's entry address
+tunnel_ipv4 = "192.0.2.0/30"       # .1 initiator, .2 responder; a private /30 outside 100.64.0.0/10
 priority = 10                      # lower wins when several lines exist

@@ -50,7 +50,7 @@ ANSWERS = [
     "cn", "cn-edge", "cn-probe", "n", "100.64.10.0/24", "",   # region 1; any port can be opened
     "ovs", "ovs-edge", "ovs-probe", "y", "", "20000-20002",   # region 2; free /24; three ports pass
     "",                                             # no more regions
-    "l1", "cn-edge", "ovs-edge", "203.0.113.30", "",  # line 1, one-way by default
+    "l1", "cn-edge", "ovs-edge", "203.0.113.30", "", "11011",  # line 1: one-way by default, tunnel port
     "",                                             # no more lines
 ]
 
@@ -79,6 +79,7 @@ EXPECTED = {
     "lines": [{
         "name": "l1", "initiator": "cn-edge", "responder": "ovs-edge", "responder_entry_ipv4": "203.0.113.30",
         "initiator_public_ipv4": "198.51.100.10", "one_way": True, "keepalive_seconds": 25, "priority": 10,
+        "port": 11011, "tunnel_ipv4": ".".join(["10", "255", "0", "0"]) + "/30",
     }],
 }
 
