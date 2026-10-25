@@ -1,42 +1,13 @@
 """`tn control`: deploy Headscale for one region, step by step."""
 
-import hashlib
-import os
-import urllib.request
-from dataclasses import dataclass, field
-from pathlib import Path
-
 from . import VERSION, pins, pki, render, scripts
-from .remote import RemoteError
+from .procedure import Action, Procedure, Step, StepError, fetch_pinned
 from .site import ensure_private_dir, write_private
 
 CA_PLACEHOLDER = "<site CA certificate from pki/ca.crt; created in step 4 if missing>"
 CERT_PLACEHOLDER = "<server certificate signed on this machine in step 4>"
 
-
-class StepError(Exception):
-    pass
-
-
-@dataclass
-class Action:
-    where: str            # "local" or an SSH alias
-    what: str
-    body: str = None      # remote script body, printed verbatim
-    prelude: str = None   # "control" or "checker"
-    privileged: bool = False
-
-
-@dataclass
-class Step:
-    number: int
-    title: str
-    what: list
-    actions: list
-    rollback: str = None
-    rollback_note: str = ""
-    read_only: bool = False
-    run: object = field(default=None, repr=False)
+__all__ = ["CA_PLACEHOLDER", "CERT_PLACEHOLDER", "Deployment", "LocalOps", "StepError"]
 
 
 class LocalOps:
@@ -47,29 +18,9 @@ class LocalOps:
         self.out = out
 
     def cached_binary(self, arch):
-        want = pins.HEADSCALE_SHA256[arch]
         cache = ensure_private_dir(self.site.cache_dir)
-        path = cache / pins.headscale_asset(arch)
-        if path.exists():
-            if _sha256(path) == want:
-                self.out(f"    cache: {path.name} (sha256 ok)")
-                return path
-            raise StepError(f"{path} does not match the pinned sha256; delete it and retry")
-        url = pins.headscale_url(arch)
-        self.out(f"    downloading {url}")
-        part = path.with_name(path.name + ".part")
-        digest = hashlib.sha256()
-        fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f, urllib.request.urlopen(url, timeout=60) as resp:
-            while chunk := resp.read(1 << 20):
-                f.write(chunk)
-                digest.update(chunk)
-        if digest.hexdigest() != want:
-            part.unlink()
-            raise StepError(f"download does not match the pinned sha256 (got {digest.hexdigest()})")
-        part.rename(path)
-        self.out(f"    sha256 ok: {want}")
-        return path
+        return fetch_pinned(pins.headscale_url(arch), cache / pins.headscale_asset(arch),
+                            pins.HEADSCALE_SHA256[arch], self.out)
 
     def ensure_ca(self):
         created, pem = pki.ensure_ca(self.site.pki_dir, self.site.name)
@@ -93,22 +44,15 @@ class LocalOps:
         return pem, False
 
 
-def _sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(1 << 20):
-            digest.update(chunk)
-    return digest.hexdigest()
+class Deployment(Procedure):
+    command = "control"
+    errors = Procedure.errors + (pki.PKIError,)
 
-
-def _indent(text, pad="      "):
-    return "\n".join(pad + line if line else "" for line in text.rstrip("\n").splitlines())
-
-
-class Deployment:
     def __init__(self, site, region_name, runner=None, ops=None, out=print):
         self.site = site
         self.region = site.region(region_name)
+        self.subject = self.region.name
+        self.target = self.region.control_host
         self.runner = runner
         self.out = out
         self.ops = ops or LocalOps(site, out)
@@ -184,7 +128,7 @@ class Deployment:
         host, checker = r.control_host, r.check_from
         sans = ", ".join(f"IP:{ip}" for ip in r.cert_ips)
         arch_note = "the architecture preflight reports (amd64 or arm64)"
-        return [
+        steps = [
             Step(
                 1, "Preflight",
                 ["Check arch, OS, root, systemd and tools; that the configured ports are free or ours;",
@@ -265,11 +209,9 @@ class Deployment:
                 rollback_note="none needed (read-only)", read_only=True, run=self._run_verify,
             ),
         ]
-
-    def rollback_steps(self):
-        return [s for s in reversed(self.steps()) if s.rollback]
-
-    # --- printing -------------------------------------------------------------
+        for step in steps:
+            step.host = checker if step.number == 8 else host
+        return steps
 
     def header(self):
         r, site = self.region, self.site
@@ -291,123 +233,31 @@ class Deployment:
             "  leaves alone  every other file, user, service, port and firewall rule",
         ])
 
-    def plan_text(self):
-        body = self._plan_body()
-        digest = hashlib.sha256(body.encode()).hexdigest()[:12]
-        return f"tn control plan {self.region.name}\nPlan id {digest}\n\n{body}", digest
+    def preludes(self):
+        return [("control host", self.prelude), ("checker", self.checker_prelude)]
 
-    def plan_id(self):
-        return self.plan_text()[1]
+    def plan_intro(self):
+        return (f"Every script on {self.region.control_host} runs as `bash -s` over SSH: this prelude, then the step body\n"
+                "inside `tn_step() { ... }` with stdin from /dev/null. Scripts on the checker use the short prelude.")
 
-    def _plan_body(self):
-        out = [self.header(), ""]
-        out.append(
-            f"Every script on {self.region.control_host} runs as `bash -s` over SSH: this prelude, then the step body\n"
-            "inside `tn_step() { ... }` with stdin from /dev/null. Scripts on the checker use the short prelude."
-        )
-        out += ["", "  Prelude (control host):", _indent(self.prelude), "",
-                "  Prelude (checker):", _indent(self.checker_prelude), ""]
-        for step in self.steps():
-            tag = "  [read-only]" if step.read_only else ""
-            out.append(f"Step {step.number}/8  {step.title}{tag}")
-            out += [f"  {line}" for line in step.what]
-            for i, action in enumerate(step.actions, 1):
-                label = f"{step.number}.{i}" if len(step.actions) > 1 else f"{step.number}"
-                who = "this machine" if action.where == "local" else (
-                    f"{action.where} as root" if action.privileged else f"{action.where} as the SSH user")
-                out.append(f"  {label} on {who}: {action.what}")
-                if action.body:
-                    out.append(_indent(action.body))
-            if step.rollback:
-                out.append(f"  Rollback ({step.rollback_note}), as root on {self.region.control_host}:")
-                out.append(_indent(step.rollback))
-            else:
-                out.append(f"  Rollback: {step.rollback_note}")
-            out.append("")
-        order = ", ".join(str(s.number) for s in self.rollback_steps())
-        out.append(
-            f"`tn control rollback {self.region.name}` runs the rollbacks of steps {order} in that order.\n"
-            "It keeps the site CA, the server certificate copy in pki/ and the download cache on this machine."
-        )
-        return "\n".join(out) + "\n"
+    def rollback_footer(self):
+        return "It keeps the site CA, the server certificate copy in pki/ and the download cache on this machine."
 
-    # --- commands ---------------------------------------------------------------
+    def done_message(self):
+        return (f"Region {self.region.name}: Headscale is up on {self.region.server_url} "
+                f"and verified from {self.region.check_from}.")
 
-    def _run_steps(self, steps, label):
-        for step in steps:
-            self.out(f"\n== {label} step {step.number}/8 {step.title} on "
-                     f"{self.region.check_from if step.number == 8 else self.region.control_host}")
-            try:
-                step.run()
-            except (RemoteError, StepError, pki.PKIError, OSError) as e:
-                self.out(f"\nFAILED at step {step.number} ({step.title}): {e}")
-                return step
-        return None
+    def rolled_back_message(self):
+        return f"Rolled back region {self.region.name}. The site CA and cache on this machine are kept."
 
-    def apply(self, yes=False, ask=input):
-        steps = self.steps()
-        self.out(self.header())
-        self.out(f"\nPlan id {self.plan_id()} (compare with the plan you approved)")
-        for s in steps:
-            self.out(f"  {s.number}. {s.title}{' (read-only)' if s.read_only else ''}")
-        if not yes:
-            answer = ask(f"Type yes to apply these steps to {self.region.control_host}: ")
-            if answer.strip() != "yes":
-                self.out("Not applied; nothing changed.")
-                return 1
-        failed = self._run_steps(steps, "apply")
-        if failed is not None:
-            done = failed.number - 1
-            self.out(f"Steps 1-{done} completed; nothing after step {failed.number} ran." if done else
-                     "Nothing was changed.")
-            if done >= 2:
-                self.out(f"Fix the cause and re-run apply (steps are idempotent), or undo with "
-                         f"`tn control rollback {self.region.name}`.")
-            return 1
-        self.out(f"\nRegion {self.region.name}: Headscale is up on {self.region.server_url} and verified from {self.region.check_from}.")
-        return 0
-
-    def rollback(self, yes=False, ask=input):
-        steps = self.rollback_steps()
-        self.out(f"Rollback for region {self.region.name} on {self.region.control_host}:")
-        for s in steps:
-            self.out(f"  step {s.number} {s.title}: {s.rollback_note}")
-        self.out("Only things marked as made by tailnet-ops are removed; anything else is reported and skipped.")
-        if not yes:
-            answer = ask(f"Type yes to roll back on {self.region.control_host}: ")
-            if answer.strip() != "yes":
-                self.out("Not rolled back; nothing changed.")
-                return 1
-        for s in steps:
-            self.out(f"\n== rollback step {s.number} {s.title}")
-            try:
-                self._control(s.rollback)
-            except RemoteError as e:
-                self.out(f"\nFAILED: {e}. Later rollback steps did not run.")
-                return 1
-        self.out(f"\nRolled back region {self.region.name}. The site CA and cache on this machine are kept.")
-        return 0
+    def run_rollback(self, step):
+        self._control(step.rollback)
 
     def preflight(self):
-        try:
-            self._run_preflight()
-        except RemoteError as e:
-            self.out(f"FAILED: {e}")
-            return 1
-        return 0
+        return self.run_once(self._run_preflight)
 
     def verify(self):
-        try:
-            self._run_verify()
-        except (RemoteError, StepError) as e:
-            self.out(f"FAILED: {e}")
-            return 1
-        return 0
+        return self.run_once(self._run_verify)
 
     def status(self):
-        try:
-            self._control(scripts.STATUS)
-        except RemoteError as e:
-            self.out(f"FAILED: {e}")
-            return 1
-        return 0
+        return self.run_once(lambda: self._control(scripts.STATUS))
