@@ -182,13 +182,21 @@ def _index(options, value):
     return values.index(value) if value in values else 0
 
 
+def ask_first_region(site, ui, default=None):
+    """A personal device joins every region at once; this only picks the one it uses first."""
+    names = list(site.regions)
+    ui.note(f"A personal device joins every region at once ({', '.join(names)}), one account each. "
+            "Pick the one it uses first; switch any time in the Tailscale menu.")
+    options = [(n, n, "first; " + ", ".join(o for o in names if o != n) + " joined too") for n in names]
+    return ui.select("Which region first?", options, default=_index(options, default))
+
+
 def ask_app(site, ui, given=None, default_name="air"):
     """A Mac with the Tailscale app: the region it starts on, and its name."""
     given = given or {}
     out = {"app": True}
     if given.get("region") is None:
-        regions = [(r.name, r.name, f"Headscale on {r.control_host}") for r in site.regions.values()]
-        out["region"] = ui.select("Which region does it start in?", regions)
+        out["region"] = ask_first_region(site, ui)
     if given.get("name") is None:
         out["name"] = ui.text("Its name in the tailnet", default_name,
                               check=lambda v: None if dns_label(v) == v.lower() else "letters, digits and '-'")
@@ -243,10 +251,11 @@ def ask(site, ui, ssh_aliases=(), host=None, given=None, pick=True, detect_os=No
             roles.reverse()                  # over SSH, a server is the likelier case
         role = ui.select("How does it join?", roles, default=_index(roles, rec.get("role")))
         out["role"] = role
-    if given.get("region") is None:
+    if given.get("region") is None and role == "personal":
+        out["region"] = ask_first_region(site, ui, rec.get("region"))
+    elif given.get("region") is None:
         regions = [(r.name, r.name, f"Headscale on {r.control_host}, {r.ipv4_prefix}") for r in site.regions.values()]
-        out["region"] = ui.select("Which region does it start in?" if role == "personal" else "Which region?",
-                                  regions, default=_index(regions, rec.get("region")))
+        out["region"] = ui.select("Which region?", regions, default=_index(regions, rec.get("region")))
     if given.get("name") is None:
         default = rec_name or (here if host is None else host)
         out["name"] = ui.text("Its name in the tailnet", default,

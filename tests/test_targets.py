@@ -123,11 +123,12 @@ class AskTest(TempDirTest):
 
     def test_this_machine_on_the_command_line(self):
         got, ui = self.ask({"Which machine?": None, "How does it join?": "personal",
-                            "Which region does it start in?": "ovs"})
+                            "Which region first?": "ovs"})
         self.assertEqual(got, {"host": None, "os_name": "linux", "role": "personal", "region": "ovs",
                                "name": "owners-mac"})
         self.assertEqual(ui.asked, ["Which Tailscale?", "Which OS?", "Which machine?", "How does it join?",
-                                    "Which region does it start in?", "Its name in the tailnet"])
+                                    "Which region first?", "Its name in the tailnet"])
+        self.assertIn("A personal device joins every region at once (cn, ovs)", ui.notes[0])
 
     def test_the_os_decides_whether_this_machine_is_offered(self):
         got, ui = self.ask({"Which OS?": "macos", "Which machine?": "box"}, this_os="linux")
