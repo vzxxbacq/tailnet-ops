@@ -7,9 +7,12 @@ CGNAT = ipaddress.IPv4Network("100.64.0.0/10")
 DOC_NETS = tuple(
     ipaddress.IPv4Network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")
 )
+# tailnet-ops's own default range for alias ranges and line tunnels: the same for every site.
+TOOL_NET = ipaddress.IPv4Network("10.255.0.0/16")
 # Addresses that may appear in the repository and in shared output.
 SHAREABLE_NETS = DOC_NETS + (
     CGNAT,
+    TOOL_NET,
     ipaddress.IPv4Network("127.0.0.0/8"),
     ipaddress.IPv4Network("0.0.0.0/32"),
 )

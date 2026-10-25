@@ -27,19 +27,19 @@ class SiteFileTest(TempDirTest):
         self.assertEqual(site.host_settings["ovs-control"].tailscale_port, 41641)
 
     def test_prefix_must_sit_inside_cgnat(self):
-        text = example_text(('ipv4_prefix = "100.64.0.0/16"', 'ipv4_prefix = "192.0.2.0/24"'))
+        text = example_text(('ipv4_prefix = "100.64.1.0/24"', 'ipv4_prefix = "192.0.2.0/24"'))
         self.assertIn("is not inside 100.64.0.0/10", self.problems(text))
 
     def test_prefix_must_avoid_avoid_prefixes(self):
-        text = example_text(("avoid_prefixes = []", 'avoid_prefixes = ["100.64.128.0/17"]'))
-        self.assertIn("overlaps avoid_prefixes entry 100.64.128.0/17", self.problems(text))
+        text = example_text(("avoid_prefixes = []", 'avoid_prefixes = ["100.64.0.0/16"]'))
+        self.assertIn("overlaps avoid_prefixes entry 100.64.0.0/16", self.problems(text))
 
     def test_prefixes_must_not_overlap(self):
-        text = example_text(('ipv4_prefix = "100.65.0.0/16"', 'ipv4_prefix = "100.64.0.0/15"'))
+        text = example_text(('ipv4_prefix = "100.64.2.0/24"', 'ipv4_prefix = "100.64.0.0/22"'))
         self.assertIn("overlaps region cn", self.problems(text))
 
     def test_prefix_must_avoid_tailscale_reserved(self):
-        text = example_text(('ipv4_prefix = "100.65.0.0/16"', 'ipv4_prefix = "100.100.0.0/16"'))
+        text = example_text(('ipv4_prefix = "100.64.2.0/24"', 'ipv4_prefix = "100.100.100.0/24"'))
         self.assertIn("which Tailscale reserves", self.problems(text))
 
     def test_region_ids_distinct(self):
@@ -52,7 +52,7 @@ class SiteFileTest(TempDirTest):
         # A line between region hosts needs no SSH lookup.
         text = example_text(('initiator = "cn-gateway"', 'initiator = "cn-control"'),
                             ('responder = "ovs-line"', 'responder = "ovs-control"'),
-                            ("[hosts.cn-gateway]", "[hosts.cn-probe]"))
+                            ("[hosts.cn-gateway]", "[hosts.cn-probe]"), ("[hosts.ovs-line]", "[hosts.ovs-probe]"))
         site = sitemod.load(self.make_site_dir(text, name="b"), known_host=lambda alias: False)
         self.assertEqual(site.lines[0].responder, "ovs-control")
 

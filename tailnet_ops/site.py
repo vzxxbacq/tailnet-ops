@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import pins
-from .privacy import CGNAT
+from .privacy import CGNAT, TOOL_NET
 
 DEFAULT_SITE_DIR = "~/.config/tailnet-ops"
 SITE_FILE = "site.toml"
@@ -60,6 +60,24 @@ class Region:
     tags: list
     metrics_port: int = pins.DEFAULT_METRICS_PORT
     grpc_port: int = pins.DEFAULT_GRPC_PORT
+    alias_ipv4: str = None  # how this tailnet's addresses appear in the other region, through a line
+
+    @property
+    def alias_net(self):
+        """The alias range: alias_ipv4, or 10.255.<third octet>.0/24 for a /24 tailnet."""
+        if self.alias_ipv4:
+            return ipaddress.IPv4Network(self.alias_ipv4)
+        net = ipaddress.IPv4Network(self.ipv4_prefix)
+        if net.prefixlen != 24:
+            return None
+        third = int(net.network_address) >> 8 & 0xFF
+        return ipaddress.IPv4Network((int(TOOL_NET.network_address) | third << 8, 24))
+
+    def alias_of(self, tailnet_ip):
+        """The alias of one of this tailnet's addresses."""
+        net = ipaddress.IPv4Network(self.ipv4_prefix)
+        offset = int(ipaddress.IPv4Address(tailnet_ip)) - int(net.network_address)
+        return str(self.alias_net.network_address + offset)
 
     @property
     def specific_listen(self):
@@ -268,7 +286,7 @@ REGION_KEYS = {
     "official_derp": bool,
     "tags": list,
 }
-REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int}
+REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int, "alias_ipv4": str}
 HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str, "region": str, "tags": list}
 NETFILTER_MODES = ("on", "nodivert", "off")
 LINE_OPTIONAL = {"port": int, "tunnel_ipv4": str}
@@ -507,6 +525,40 @@ def parse(data, known_host=None, directory=None):
                 if not isinstance(tag, str) or tag not in allowed:
                     problems.append(f"{where}.tags: {tag!r} is not a tag of the host's region")
         host_settings[alias] = HostSettings(name=alias, **h)
+
+    def region_of(alias):
+        h = host_settings.get(alias)
+        if h and h.region:
+            return h.region
+        found = [n for n, r in regions.items() if alias in (r.control_host, r.check_from)]
+        return found[0] if len(found) == 1 else None
+
+    line_regions = {region_of(h) for ln in lines for h in (ln.initiator, ln.responder)} - {None}
+    taken = [(f"regions.{n}.ipv4_prefix", ipaddress.IPv4Network(r.ipv4_prefix)) for n, r in regions.items()
+             if _net("", r.ipv4_prefix, [])]
+    taken += [(f"lines.{ln.name}.tunnel_ipv4", ipaddress.IPv4Network(ln.tunnel_ipv4)) for ln in lines
+              if ln.tunnel_ipv4 and _net("", ln.tunnel_ipv4, [])]
+    for name, r in regions.items():
+        where = f"regions.{name}.alias_ipv4"
+        if r.alias_ipv4 and _net(where, r.alias_ipv4, problems) is None:
+            continue
+        try:
+            alias = r.alias_net
+        except ValueError:
+            continue
+        if alias is None:
+            if name in line_regions:
+                problems.append(f"{where}: set it (a private range the size of ipv4_prefix); only /24 tailnets get one by default")
+            continue
+        prefix = ipaddress.IPv4Network(r.ipv4_prefix)
+        if alias.prefixlen != prefix.prefixlen:
+            problems.append(f"{where}: {alias} must be the size of ipv4_prefix ({prefix})")
+        if not alias.is_private or alias.overlaps(CGNAT):
+            problems.append(f"{where}: {alias} must be a private range outside 100.64.0.0/10")
+        for label, other in taken:
+            if alias.overlaps(other):
+                problems.append(f"{where}: {alias} overlaps {label} ({other})")
+        taken.append((where, alias))
 
     if problems:
         raise SiteError(problems)

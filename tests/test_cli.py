@@ -87,7 +87,7 @@ class CliTest(TempDirTest):
     def test_join_plan(self):
         rc, out, err = run_cli("join", "plan", "cn-probe", "--offline", "--site", str(self.site))
         self.assertEqual(rc, 0, err)
-        self.assertIn("cn-probe → region cn (its checker host): tailnet 100.64.0.0/16", out)
+        self.assertIn("cn-probe → region cn (its checker host): tailnet 100.64.1.0/24", out)
         self.assertIn("checks        not run (--offline)", out)
         self.assertIn("  5  Join with a one-time tagged key  log out, delete the node and its key on cn-control", out)
         ready = "TN-FACT os=Ubuntu 24.04 LTS\nTN-FACT machine=x86_64\nTN-FACT arch=amd64\nTN-FACT port=free\nTN-FACT login=ok\n"

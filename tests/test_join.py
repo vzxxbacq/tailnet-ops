@@ -31,7 +31,7 @@ class FakeOps:
         return {"tailscale": Path("/cache/tailscale"), "tailscaled": Path("/cache/tailscaled")}
 
 
-def status(state="Running", ip="100.64.0.1", tags=("tag:cn-server",)):
+def status(state="Running", ip="100.64.1.1", tags=("tag:cn-server",)):
     return json.dumps({"BackendState": state, "Self": {"TailscaleIPs": [ip, "fd7a:115c:a1e0::1"], "Tags": list(tags)}})
 
 
@@ -218,11 +218,11 @@ class JoinApplyTest(TempDirTest):
         self.assertIn("    already joined; no new key made", self.out)
 
     def test_verify_catches_problems(self):
-        runner = FakeRunner(responses(status=status(ip="100.65.0.9", tags=["tag:cn-gateway"]), derp=902, nodes=[]))
+        runner = FakeRunner(responses(status=status(ip="100.64.2.9", tags=["tag:cn-gateway"]), derp=902, nodes=[]))
         with self.assertRaises(StepError) as cm:
             self.job(runner)._run_verify()
         msg = str(cm.exception)
-        self.assertIn("no address inside 100.64.0.0/16", msg)
+        self.assertIn("no address inside 100.64.1.0/24", msg)
         self.assertIn("tags are ['tag:cn-gateway'], expected ['tag:cn-server']", msg)
         self.assertIn("preferred DERP region is 902, expected 901", msg)
         self.assertIn("exactly one node named cn-probe", msg)

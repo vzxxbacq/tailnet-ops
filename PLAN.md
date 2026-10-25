@@ -14,7 +14,7 @@ The first site is the owner's. Its configuration and notes are in the owner's si
 
 ## Privacy, built into the tool
 
-1. **The repository is publishable.** It holds code, templates, docs and examples only. Examples use documentation ranges and placeholder names. `make check` runs a guard over tracked files and all history: it blocks other IPv4 literals outside 100.64.0.0/10, private keys, Headscale and Tailscale auth keys, and tokens.
+1. **The repository is publishable.** It holds code, templates, docs and examples only. Examples use documentation ranges and placeholder names. `make check` runs a guard over tracked files and all history: it blocks other IPv4 literals outside 100.64.0.0/10 and 10.255.0.0/16 (tailnet-ops's default alias and tunnel range, the same for every site), private keys, Headscale and Tailscale auth keys, and tokens.
 2. **The site directory is private.**
    - Location: `~/.config/tailnet-ops/` by default, or `--site DIR` or `TN_SITE`.
    - Permissions: the directory is 0700 and its files 0600.

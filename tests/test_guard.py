@@ -24,7 +24,7 @@ def rules(text, names=()):
 class ScanTextTest(TempDirTest):
     def test_shareable_addresses_pass(self):
         text = ("192.0.2.1 198.51.100.10/24 203.0.113.20:9443 100.64.0.0/16 100.100.100.100 "
-                "127.0.0.1 0.0.0.0:3478 version 1.104.2 and 0.29.6")
+                "127.0.0.1 0.0.0.0:3478 10.255.1.0/24 version 1.104.2 and 0.29.6")
         self.assertEqual(rules(text), [])
 
     def test_other_addresses_fail(self):

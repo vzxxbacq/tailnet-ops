@@ -13,7 +13,7 @@ public_ipv4 = "198.51.100.10"      # how clients reach the control plane
 listen_ipv4 = "0.0.0.0"            # address Headscale binds; a specific IP on multi-address hosts
 port = 9443
 stun_port = 3478
-ipv4_prefix = "100.64.0.0/16"      # inside 100.64.0.0/10, not overlapping other regions
+ipv4_prefix = "100.64.1.0/24"      # one /24 per tailnet, inside 100.64.0.0/10; it appears across a line as 10.255.1.0/24
 avoid_prefixes = []                # e.g. provider DNS inside 100.64.0.0/10
 base_domain = "cn.tailnet.internal"
 derp_region_id = 901
@@ -29,7 +29,7 @@ public_ipv4 = "203.0.113.20"
 listen_ipv4 = "203.0.113.20"
 port = 9443
 stun_port = 3478
-ipv4_prefix = "100.65.0.0/16"
+ipv4_prefix = "100.64.2.0/24"
 avoid_prefixes = []
 base_domain = "ovs.tailnet.internal"
 derp_region_id = 902
@@ -48,6 +48,9 @@ tailscale_port = 41641             # fixed UDP port for tailscaled, where a prov
 region = "cn"                      # needed for hosts that neither control nor check a region
                                    # tags default to the region's -server tag, plus -gateway for a
                                    # line initiator and -border for a line responder
+
+[hosts.ovs-line]
+region = "ovs"
 
 [[lines]]                          # optional dedicated links between regions
 name = "line1"

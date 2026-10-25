@@ -1,9 +1,9 @@
+import json
 import shutil
 import subprocess
-import unittest
 
+from tailnet_ops import firewall, render, scripts
 from tailnet_ops import line as linemod
-from tailnet_ops import scripts
 from tailnet_ops import site as sitemod
 from tailnet_ops.procedure import StepError
 from tailnet_ops.remote import Result
@@ -12,22 +12,54 @@ from tests.helpers import FakeRunner, TempDirTest, bash, example_text
 PUB_I = "I" * 43 + "="
 PUB_R = "R" * 43 + "="
 
+NFT_POLICY_DROP = json.dumps({"nftables": [
+    {"chain": {"family": "inet", "table": "phones", "name": "forward", "hook": "forward", "policy": "drop"}},
+    {"rule": {"family": "inet", "table": "phones", "chain": "forward", "expr": [{"accept": None}]}},
+]})
+
+
+def check_output(tsip, nft=NFT_POLICY_DROP, legacy="-P FORWARD ACCEPT"):
+    return (f"TN-FACT tsip={tsip}\nTN-FACT forward=1\nTN-BEGIN nft\n{nft}\nTN-END nft\n"
+            f"TN-BEGIN legacy\n{legacy}\nTN-END legacy\nchecks passed; nothing was changed\n")
+
+
+def nodes(name, ip, approved=()):
+    return json.dumps([{"id": 1, "given_name": name, "ip_addresses": [ip, "fd7a:115c:a1e0::1"],
+                        "approved_routes": list(approved)},
+                       {"id": 2, "given_name": f"{name}-member", "ip_addresses": [ip[:-1] + "7"]}])
+
 
 class LineSiteTest(TempDirTest):
-    def test_tunnel_fields(self):
-        ln = self.load_site().lines[0]
-        self.assertEqual(ln.port, 11011)
-        self.assertEqual(ln.interface, "wg-line1")
+    def test_tunnel_and_alias_fields(self):
+        site = self.load_site()
+        ln = site.lines[0]
+        self.assertEqual((ln.port, ln.interface), (11011, "wg-line1"))
         self.assertEqual(ln.tunnel_addresses, ("192.0.2.1", "192.0.2.2"))
+        cn, ovs = site.regions["cn"], site.regions["ovs"]
+        self.assertEqual(str(cn.alias_net), "10.255.1.0/24")
+        self.assertEqual(ovs.alias_of("100.64.2.7"), "10.255.2.7")
 
-    def test_tunnel_validation(self):
-        for value, message in (('"192.0.2.0/29"', "use a /30"),
-                               ('"100.64.200.0/30"', "private range outside 100.64.0.0/10"),
-                               ('"nope"', "is not an IPv4 prefix")):
-            text = example_text(('tunnel_ipv4 = "192.0.2.0/30"', f"tunnel_ipv4 = {value}"))
-            with self.subTest(value=value), self.assertRaises(sitemod.SiteError) as cm:
-                sitemod.load(self.make_site_dir(text, name=f"t{len(message)}"), known_host=lambda a: True)
+    def test_validation(self):
+        for old, new, message in (
+            ('tunnel_ipv4 = "192.0.2.0/30"', 'tunnel_ipv4 = "192.0.2.0/29"', "use a /30"),
+            ('tunnel_ipv4 = "192.0.2.0/30"', 'tunnel_ipv4 = "100.64.200.0/30"', "private range outside 100.64.0.0/10"),
+            ('ipv4_prefix = "100.64.2.0/24"', 'ipv4_prefix = "100.65.0.0/16"', "only /24 tailnets get one by default"),
+            ('ipv4_prefix = "100.64.2.0/24"', 'ipv4_prefix = "100.64.2.0/24"\nalias_ipv4 = "192.0.2.0/24"',
+             "overlaps lines.line1.tunnel_ipv4"),
+        ):
+            with self.subTest(new=new), self.assertRaises(sitemod.SiteError) as cm:
+                sitemod.load(self.make_site_dir(example_text((old, new)), name=f"v{abs(hash(new))}"),
+                             known_host=lambda a: True)
             self.assertIn(message, str(cm.exception))
+
+    def test_policy_grants_the_other_alias(self):
+        site = self.load_site()
+        doc = json.loads("\n".join(l for l in render.policy(site, site.regions["cn"]).splitlines()
+                                   if not l.startswith("//")))
+        self.assertIn({"src": ["owner@"], "dst": ["10.255.2.0/24"], "ip": ["*"]}, doc["grants"])
+        doc = json.loads("\n".join(l for l in render.policy(site, site.regions["cn"], skip_lines=("line1",)).splitlines()
+                                   if not l.startswith("//")))
+        self.assertEqual(len(doc["grants"]), 2)
 
     def test_needs_port_and_tunnel(self):
         text = example_text(("port = 11011                       # UDP port", "# port"),
@@ -40,6 +72,39 @@ class LineSiteTest(TempDirTest):
             linemod.Line(site, "nope")
 
 
+class FirewallTest(TempDirTest):
+    def test_finds_what_drops(self):
+        ruleset = json.dumps({"nftables": [
+            {"chain": {"family": "inet", "table": "phones", "name": "forward", "hook": "forward", "policy": "drop"}},
+            {"chain": {"family": "ip", "table": "filter", "name": "FORWARD", "hook": "forward", "policy": "drop"}},
+            {"chain": {"family": "inet", "table": "quiet", "name": "fwd", "hook": "forward", "policy": "accept"}},
+            {"chain": {"family": "inet", "table": "strict", "name": "fwd", "hook": "forward", "policy": "accept"}},
+            {"rule": {"family": "inet", "table": "strict", "chain": "fwd", "expr": [{"drop": None}]}},
+            {"chain": {"family": "ip6", "table": "v6", "name": "fwd", "hook": "forward", "policy": "drop"}},
+            {"chain": {"family": "inet", "table": "tn_line1", "name": "fwd", "hook": "forward", "policy": "drop"}},
+            {"chain": {"family": "inet", "table": "phones", "name": "input", "hook": "input", "policy": "drop"}},
+        ]})
+        targets = firewall.blocking_targets(ruleset, "-P FORWARD DROP\n", own_tables=("tn_line1",))
+        self.assertEqual([(t.kind, t.label(), t.reason) for t in targets], [
+            ("nft", "nft inet phones forward", "policy drop"),
+            ("nft", "nft inet strict fwd", "drop rules"),
+            ("iptables", "iptables FORWARD", "policy drop"),          # Docker or ufw through iptables-nft
+            ("iptables-legacy", "iptables-legacy FORWARD", "policy DROP"),
+        ])
+        self.assertEqual(firewall.blocking_targets("", "-P FORWARD ACCEPT\n"), [])
+
+    def test_allow_script(self):
+        targets = firewall.blocking_targets(NFT_POLICY_DROP, "-P FORWARD DROP\n")
+        text = firewall.allow_script("line1", "wg-line1", targets, mark="tailnet-ops line=line1 side=initiator")
+        self.assertEqual(text.splitlines()[1], "# tailnet-ops line=line1 side=initiator")
+        self.assertIn('nft insert rule inet phones forward iifname "wg-line1" oifname "tailscale0" counter accept '
+                      'comment "tailnet-ops line=line1"', text)
+        self.assertIn('iifname "tailscale0" oifname "wg-line1"', text)
+        self.assertIn("iptables-legacy -I FORWARD 1 -i wg-line1 -o tailscale0", text)
+        p = subprocess.run(["sh", "-n"], input=text, capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+
 class LinePlanTest(TempDirTest):
     def setUp(self):
         super().setUp()
@@ -47,30 +112,70 @@ class LinePlanTest(TempDirTest):
         self.ln = self.site.lines[0]
 
     def test_configs(self):
-        responder = linemod.conf(self.ln, "responder", PUB_I)
-        self.assertIn("Address = 192.0.2.2/30", responder)
+        responder = linemod.conf(self.ln, "responder", PUB_I, "10.255.1.0/24")
         self.assertIn("ListenPort = 11011", responder)
-        self.assertIn(f"PublicKey = {PUB_I}", responder)
-        self.assertIn("AllowedIPs = 192.0.2.1/32", responder)
+        self.assertIn("AllowedIPs = 192.0.2.1/32, 10.255.1.0/24", responder)
         self.assertNotIn("Endpoint", responder)
-        initiator = linemod.conf(self.ln, "initiator", PUB_R)
-        self.assertIn("Address = 192.0.2.1/30", initiator)
+        initiator = linemod.conf(self.ln, "initiator", PUB_R, "10.255.2.0/24")
         self.assertIn("Endpoint = 203.0.113.30:11011", initiator)
         self.assertIn("PersistentKeepalive = 25", initiator)
-        self.assertNotIn("ListenPort", initiator)
         for text in (responder, initiator):
-            self.assertIn("PostUp = wg set %i private-key /etc/wireguard/wg-line1.key", text)
+            self.assertIn("PostUp = nft -f /etc/wireguard/wg-line1.nft", text)
+            self.assertIn("PostUp = /etc/wireguard/wg-line1-allow.sh add", text)
+            self.assertIn("PostDown = nft delete table inet tn_line1 2>/dev/null || true", text)
             self.assertNotIn("PrivateKey", text)
+
+    def test_nat(self):
+        text = linemod.nft_rules(self.ln, "responder", "100.64.2.0/24", "10.255.2.0/24", "100.64.2.1")
+        self.assertIn('iifname "wg-line1" ip daddr 10.255.2.0/24 dnat ip prefix to ip daddr map '
+                      '{ 10.255.2.0/24 : 100.64.2.0/24 }', text)
+        self.assertIn('oifname "wg-line1" ip saddr 100.64.2.0/24 snat ip to 192.0.2.2', text)
+        self.assertIn('iifname "wg-line1" oifname "tailscale0" snat ip to 100.64.2.1', text)
 
     def test_plan(self):
         job = linemod.Line(self.site, "line1")
         text, digest = job.plan_text()
-        self.assertEqual(text.count("  Rollback"), 5)
-        self.assertIn("runs the rollbacks of steps 4, 3, 2 in that order", text)
+        self.assertEqual(text.count("  Rollback"), 6)
+        self.assertIn("runs the rollbacks of steps 5, 4, 3, 2 in that order", text)
         self.assertEqual(digest, linemod.Line(self.site, "line1").plan_id())
         summary = job.summary_text()
-        self.assertIn("tunnel        wg-line1: 192.0.2.1 (cn-gateway) ⇄ 192.0.2.2 (ovs-line)", summary)
-        self.assertIn("leaves alone  existing tunnels, nft tables, routes, forwarding", summary)
+        self.assertIn("addresses     cn hosts appear in ovs as 10.255.1.0/24; ovs hosts appear in cn as 10.255.2.0/24",
+                      summary)
+        self.assertIn("routes        cn-gateway advertises 10.255.2.0/24 into cn", summary)
+
+
+class Ends(FakeRunner):
+    """Both ends and both control hosts of the example line, answering like real hosts."""
+
+    def __init__(self, ping_ok=True):
+        super().__init__()
+        self.ping_ok = ping_ok
+        self.prefs = {"cn-gateway": [], "ovs-line": []}
+
+    def run(self, host, script, **kw):
+        FakeRunner.run(self, host, script, **kw)
+        ts = {"cn-gateway": "100.64.1.3", "ovs-line": "100.64.2.4"}
+        if "checks passed" in script:
+            return Result(0, check_output(ts[host]))
+        if "wg genkey" in script:
+            return Result(0, f"TN-FACT pub={PUB_I if host == 'cn-gateway' else PUB_R}\n")
+        if "debug prefs" in script:
+            return Result(0, json.dumps({"AdvertiseRoutes": self.prefs[host]}))
+        if "--advertise-routes=" in script:
+            routes = script.split("--advertise-routes=", 1)[1].split("\n", 1)[0]
+            self.prefs[host] = [r for r in routes.split(",") if r]
+            return Result(0, "")
+        if "nodes list -o json" in script:
+            return Result(0, nodes("cn-gateway", "100.64.1.3") if host == "cn-control" else nodes("ovs-line", "100.64.2.4"))
+        if "TN-PING" in script:
+            addrs = [w for w in script.split() if w.count(".") == 3 and w[0].isdigit()]
+            dsts = [a for a in addrs if not a.startswith(("100.64.", "1.", "2."))]
+            return Result(0, "".join(f"TN-PING {a} {'ok' if self.ping_ok else 'fail'}\n" for a in dsts))
+        if '"$TS_BIN" ip -4' in script:
+            return Result(0, ts[host] + "\n")
+        if "TN-LEFT" in script:
+            return Result(0, "")
+        return Result(0, "")
 
 
 class LineApplyTest(TempDirTest):
@@ -79,74 +184,72 @@ class LineApplyTest(TempDirTest):
         self.site = self.load_site()
         self.out = []
 
-    def runner(self):
-        class Ends(FakeRunner):
-            def run(inner, host, script, **kw):
-                FakeRunner.run(inner, host, script, **kw)
-                if "wg genkey" in script:
-                    return Result(0, f"TN-FACT pub={PUB_I if host == 'cn-gateway' else PUB_R}\n")
-                if "TN-LEFT" in script:
-                    return Result(0, "")
-                return Result(0, "TN-FACT ping=ok\n" if "ping -c" in script else "")
-        return Ends()
+    def job(self, runner):
+        return linemod.Line(self.site, "line1", runner=runner, out=self.out.append)
 
-    def test_apply_order_and_keys(self):
-        runner = self.runner()
-        job = linemod.Line(self.site, "line1", runner=runner, out=self.out.append)
+    def test_apply(self):
+        runner = Ends()
+        job = self.job(runner)
         self.assertEqual(job.apply(ask=lambda p: "no"), 1)
         self.assertEqual(runner.calls, [])
         self.assertEqual(job.apply(yes=True), 0, "\n".join(self.out))
-        order = []
-        for _r, host, script, _a, privileged in runner.calls:
-            self.assertTrue(privileged)
-            for marker, name in (("checks passed", "check"), ("wg genkey", "keys"), ("wg-quick@", "start"),
-                                 ("ping -c", "ping")):
-                if marker in script:
-                    order.append((name, host))
-                    break
-        self.assertEqual(order, [("check", "cn-gateway"), ("check", "ovs-line"), ("keys", "cn-gateway"),
-                                 ("keys", "ovs-line"), ("start", "ovs-line"), ("start", "cn-gateway"),
-                                 ("ping", "cn-gateway"), ("ping", "ovs-line")])
-        starts = {host: script for _r, host, script, _a, _p in runner.calls if "wg-quick@" in script and "cat >" in script}
-        self.assertIn(f"PublicKey = {PUB_I}", starts["ovs-line"])
-        self.assertIn(f"PublicKey = {PUB_R}", starts["cn-gateway"])
-        self.assertIn("Line line1 is up: cn-gateway 192.0.2.1 ⇄ 192.0.2.2 ovs-line.", self.out[-1])
+        ends = {h: s for _r, h, s, _a, _p in runner.calls if "cat > \"$CONF.tn-new\"" in s}
+        self.assertIn(f"PublicKey = {PUB_I}", ends["ovs-line"])
+        self.assertIn(f"PublicKey = {PUB_R}", ends["cn-gateway"])
+        self.assertIn("snat ip to 100.64.2.4", ends["ovs-line"])
+        self.assertIn("nft insert rule inet phones forward", ends["cn-gateway"])
+        self.assertEqual(runner.prefs, {"cn-gateway": ["10.255.2.0/24"], "ovs-line": ["10.255.1.0/24"]})
+        approvals = [s for _r, h, s, _a, _p in runner.calls if "approve-routes" in s]
+        self.assertEqual(len(approvals), 2)
+        self.assertIn('-r "10.255.2.0/24"', approvals[0])
+        policies = [(h, s) for _r, h, s, _a, _p in runner.calls if "policy check -f" in s]
+        self.assertEqual([h for h, _s in policies], ["cn-control", "ovs-control"])
+        self.assertIn("10.255.2.0/24", policies[0][1])
+        self.assertTrue(any("✓ cn → ovs: ovs-line-member at 10.255.2.7" in line for line in self.out), self.out)
+        self.assertIn("Line line1 connects cn and ovs", self.out[-1])
+
+    def test_verify_reports_each_host(self):
+        runner = Ends(ping_ok=False)
+        with self.assertRaises(StepError) as cm:
+            self.job(runner)._run_verify()
+        self.assertIn("cannot reach ovs-line-member at 10.255.2.7", str(cm.exception))
 
     def test_rollback(self):
-        runner = self.runner()
-        job = linemod.Line(self.site, "line1", runner=runner, out=self.out.append)
+        runner = Ends()
+        runner.prefs = {"cn-gateway": ["10.255.2.0/24", "192.0.2.128/25"], "ovs-line": ["10.255.1.0/24"]}
+        job = self.job(runner)
         self.assertEqual(job.rollback(yes=True), 0, "\n".join(self.out))
-        sent = [(c[1], c[2]) for c in runner.calls]
-        self.assertEqual(sent[0][0], "cn-gateway")
-        self.assertIn(linemod.ROLLBACK_START.strip(), sent[0][1])
-        self.assertEqual(sent[1][0], "ovs-line")
-        self.assertIn(linemod.ROLLBACK_START.strip(), sent[1][1])
-        self.assertIn(linemod.ROLLBACK_KEYS.strip(), sent[2][1])
-        self.assertIn(linemod.ROLLBACK_KEYS.strip(), sent[3][1])
-        self.assertIn(linemod.LEFTOVERS.strip(), sent[4][1])
-        self.assertTrue(any("✓ Nothing left on cn-gateway or ovs-line." in line for line in self.out))
+        self.assertEqual(runner.prefs, {"cn-gateway": ["192.0.2.128/25"], "ovs-line": []})
+        policies = [s for _r, h, s, _a, _p in runner.calls if "policy check -f" in s]
+        self.assertTrue(policies and all("10.255." not in s for s in policies))
+        ends = [h for _r, h, s, _a, _p in runner.calls if linemod.ROLLBACK_END.strip() in s]
+        self.assertEqual(ends, ["cn-gateway", "ovs-line"])  # step 4 (initiator) is undone before step 3
 
     def test_check_collects_failures(self):
         class Failing(FakeRunner):
             def run(inner, host, script, **kw):
                 if host == "ovs-line":
                     return Result(1, "  FAIL  udp/11011 is in use\n")
-                return Result(0, "checks passed\n")
+                return Result(0, check_output("100.64.1.3"))
         checks = linemod.Line(self.site, "line1", runner=Failing()).check()
         self.assertEqual(checks["fails"], ["ovs-line: udp/11011 is in use"])
+        self.assertEqual([t.label() for t in checks["targets"]["initiator"]], ["nft inet phones forward"])
 
 
 class LineScriptsTest(TempDirTest):
     def test_scripts_parse_and_pass_shellcheck(self):
         job = linemod.Line(self.load_site(), "line1")
+        job.targets = {"initiator": firewall.blocking_targets(NFT_POLICY_DROP, "-P FORWARD DROP"), "responder": []}
         bodies = []
         for step in job.steps():
             for action in step.actions:
                 if action.body:
                     bodies.append(scripts.wrap(job.preludes_by_side[action.prelude], action.body))
-            if step.rollback:
+            if step.rollback and step.undo is None:  # a custom undo runs from this machine, not as this script
                 bodies.append(scripts.wrap(job.preludes_by_side["initiator"], step.rollback))
         bodies.append(scripts.wrap(job.preludes_by_side["responder"], linemod.LEFTOVERS))
+        bodies.append(scripts.wrap(job.preludes_by_side["initiator"],
+                                   linemod.ping_many([("a", "10.255.2.7")], "100.64.1.3")))
         for script in bodies:
             p = subprocess.run([bash(), "-n"], input=script, capture_output=True, text=True)
             self.assertEqual(p.returncode, 0, p.stderr)
@@ -154,7 +257,3 @@ class LineScriptsTest(TempDirTest):
                 p = subprocess.run(["shellcheck", "-s", "bash", "-S", "warning", "-e", "SC2034", "-"],
                                    input=script, capture_output=True, text=True)
                 self.assertEqual(p.returncode, 0, p.stdout)
-
-
-if __name__ == "__main__":
-    unittest.main()

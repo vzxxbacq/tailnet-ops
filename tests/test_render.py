@@ -26,7 +26,7 @@ class RenderTest(TempDirTest):
             'listen_addr: "0.0.0.0:9443"',
             'metrics_listen_addr: "127.0.0.1:9090"',
             'grpc_listen_addr: "127.0.0.1:50443"',
-            '  v4: "100.64.0.0/16"',
+            '  v4: "100.64.1.0/24"',
             f'  v6: "{pins.IPV6_PREFIX}"',
             "    enabled: true",
             "    region_id: 901",
@@ -64,6 +64,7 @@ class RenderTest(TempDirTest):
         self.assertEqual(doc["grants"], [
             {"src": tags, "dst": tags, "ip": ["*"]},
             {"src": ["owner@"], "dst": tags, "ip": ["*"]},
+            {"src": ["owner@"], "dst": ["10.255.2.0/24"], "ip": ["*"]},  # ovs, through line1
         ])
         self.assertNotIn("acls", doc)
         self.assertNotIn("ssh", doc)

@@ -264,7 +264,9 @@ def _free_port(facts, proto, preferred, taken=(), ours=("headscale",)):
 
 
 def _allocate_prefix(avoid, used):
-    blocked = [ipaddress.IPv4Network(p) for p in avoid] + list(used) + list(TAILSCALE_RESERVED)
+    # 100.64.0.0/24 is skipped: its default alias (10.255.0.0/24) would hold the default tunnels.
+    blocked = [ipaddress.IPv4Network(p) for p in avoid] + list(used) + list(TAILSCALE_RESERVED) + [
+        ipaddress.IPv4Network("100.64.0.0/24")]
     for net in CGNAT.subnets(new_prefix=24):
         if not any(net.overlaps(b) for b in blocked):
             return net

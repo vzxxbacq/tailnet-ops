@@ -31,10 +31,10 @@
 | `./tn join verify <host>` | 只读检查：已连上、地址在本区网段、标签正确、用本区 DERP |
 | `./tn join rollback <host>` | 退出 tailnet 并删掉入网时加的东西，要输入 `yes` |
 | `./tn line list` | 列出站点里的所有专线：两端、入口、隧道地址、优先级（只读 `site.toml`） |
-| `./tn line plan <line>` | 只读检查专线两端，再列出步骤和撤销方法 |
-| `./tn line apply <line>` | 两端各生成私钥，发起方主动建 WireGuard 隧道并保活，要输入 `yes` |
-| `./tn line verify <line>` | 只读：两端互相 ping 隧道地址 |
-| `./tn line rollback <line>` | 停掉隧道、删掉两端的配置和私钥，要输入 `yes` |
+| `./tn line plan <line>` | 只读检查专线两端和它们的防火墙，列出会挡住转发的链、步骤和撤销方法 |
+| `./tn line apply <line>` | 拉通两个 tailnet：WireGuard 隧道、地址映射和 NAT、给挡路的防火墙链加带标记的放行规则、宣告并批准路由、更新策略，最后逐台 ping 对方区的机器。要输入 `yes` |
+| `./tn line verify <line>` | 只读：两端互相 ping 隧道地址，再 ping 对方区每台已入网机器的映射地址 |
+| `./tn line rollback <line>` | 撤回路由和策略，停掉隧道，删掉 NAT 表、放行规则、定时器和文件，最后检查有无残留。要输入 `yes` |
 | `./tn status <region>` | 列出节点 |
 | `make check` | 离线测试，加上对工作区和全部历史的隐私检查 |
 

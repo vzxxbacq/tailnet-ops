@@ -67,7 +67,7 @@ EXPECTED = {
         "ovs": {
             "control_host": "ovs-edge", "check_from": "ovs-probe",
             "public_ipv4": "203.0.113.20", "listen_ipv4": "203.0.113.20", "port": 20000, "stun_port": 20001,
-            "ipv4_prefix": "100.64.0.0/24", "avoid_prefixes": [],
+            "ipv4_prefix": "100.64.1.0/24", "avoid_prefixes": [],
             "base_domain": "ovs.tailnet.internal", "derp_region_id": 902, "derp_region_code": "ovs",
             "derp_region_name": "OVS ovs-edge", "official_derp": True, "tags": ["tag:ovs-server", "tag:ovs-border"],
         },

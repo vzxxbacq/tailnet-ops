@@ -100,8 +100,27 @@ def headscale_config(site, region):
     return head + to_yaml(cfg) + "\n"
 
 
-def policy(site, region):
-    """The starter policy: tagged servers reach each other, the owner reaches them all."""
+def line_peers(site, region, skip_lines=()):
+    """[(line, other region)] for each line with an end in this region."""
+    from .site import SiteError
+    out = []
+    for ln in site.lines:
+        if ln.name in skip_lines:
+            continue
+        try:
+            a, b = site.host_region(ln.initiator), site.host_region(ln.responder)
+        except SiteError:
+            continue
+        if region.name == a.name and b.name != a.name:
+            out.append((ln, b))
+        elif region.name == b.name and a.name != b.name:
+            out.append((ln, a))
+    return out
+
+
+def policy(site, region, skip_lines=()):
+    """The starter policy: tagged servers reach each other, the owner reaches them all,
+    and through each line the owner reaches the other region's alias range."""
     owner = f"{site.owner_user}@"
     tags = list(region.tags)
     doc = {
@@ -111,6 +130,9 @@ def policy(site, region):
             {"src": [owner], "dst": tags, "ip": ["*"]},
         ],
     }
+    for _ln, other in line_peers(site, region, skip_lines):
+        if other.alias_net is not None:
+            doc["grants"].append({"src": [owner], "dst": [str(other.alias_net)], "ip": ["*"]})
     head = (
         f"// {marker(region)}\n"
         f"// Starter policy for tailnet {region.name}: its tagged servers reach each other,\n"
