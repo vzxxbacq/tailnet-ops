@@ -1,7 +1,8 @@
 """What a Mac with the Tailscale app (the standalone build) needs, as files it reads.
 
 - A configuration profile (.mobileconfig): the site CA as a trusted root, and the app's system
-  policies: its name, subnet routes and DNS always on, and who manages it. It holds no secret.
+  policies: its name, subnet routes and DNS always on, start at login, and who manages it. It
+  holds no secret.
   It cannot name the login servers: the LoginURL policy would force every account onto one
   server, and a personal device needs an account in each region.
 - A block to paste into Terminal: the app's own CLI logs in to each region as an account named
@@ -58,6 +59,7 @@ def profile(site, name, label, ca_pem):
         "Hostname": label,
         "UseTailscaleSubnets": "always",
         "UseTailscaleDNSSettings": "always",
+        "TailscaleStartOnLogin": True,
         "ManagedByOrganizationName": f"tailnet-ops {site.name}",
         "ManagedByCaption": f"Servers: {where}. Switch region in the account menu.",
     }

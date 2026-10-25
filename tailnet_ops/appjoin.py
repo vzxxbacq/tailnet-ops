@@ -1,16 +1,17 @@
-"""`tn join <name> --app`: a Mac that runs the Tailscale app joins every region as the owner.
+"""`tn join --app`: a Mac that runs the Tailscale app joins every region as the owner.
 
-tn runs on a machine that can log in to the control hosts; the Mac itself needs no SSH, keys or
-tn. tn writes a configuration profile for the app, hands over one block to paste into the Mac's
-Terminal, waits until every region lists the Mac, then updates names and writes a Clash Verge
-extension script.
+tn runs on a machine that can log in to the control hosts. For another Mac, which needs no SSH,
+keys or tn, it writes a configuration profile for the app and hands over one block to paste into
+that Mac's Terminal. For this machine (here) it opens the profile and runs the block itself.
+Then it waits until every region lists the Mac, updates names and writes a Clash Verge script.
 """
 
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
-from . import apple, join, names, pins, scripts
+from . import apple, join, macos, names, pins, scripts
 from .procedure import Action, Procedure, Step, StepError
 from .site import dns_label, ensure_private_dir, write_private
 
@@ -21,7 +22,8 @@ class AppJoin(Procedure):
     command = "join"
     errors = Procedure.errors + (KeyboardInterrupt,)
 
-    def __init__(self, site, name, region, runner=None, out=print, show=None, ca_pem=None, clipboard=None):
+    def __init__(self, site, name, region, runner=None, out=print, show=None, ca_pem=None, clipboard=None,
+                 here=False, local=None):
         self.site = site
         self.name = name
         self.label = dns_label(name)
@@ -34,6 +36,8 @@ class AppJoin(Procedure):
         self.show = show or out                  # prints without logging: the block holds keys
         self.ca_pem = ca_pem
         self.clipboard = clipboard if clipboard is not None else copy_to_clipboard
+        self.here = here                         # this machine: tn opens the profile and runs the block
+        self.local = local or Local()
         self.remember = self.forget = None
         self.pause = None            # set in a terminal: wait until the profile is on the Mac
         self.sleep = time.sleep
@@ -80,6 +84,8 @@ class AppJoin(Procedure):
             self._ca()
         except StepError as e:
             fails.append(str(e))
+        if self.here:
+            fails += self.local.problems()
         return {"facts": {}, "fails": fails}
 
     # --- steps ------------------------------------------------------------------------
@@ -96,6 +102,11 @@ class AppJoin(Procedure):
         ensure_private_dir(self.profile_path.parent)
         write_private(self.profile_path, apple.profile(self.site, self.name, self.label, self._ca()))
         self.out(f"    wrote {self.profile_path} (the site CA and the app's settings; no secret)")
+        if self.here:
+            self.local.open(self.profile_path)
+            self.out("    opened it: install it in System Settings → General → Device Management (it asks for your")
+            self.out("    password). It must be installed before the accounts are added.")
+            return
         self.out("    On the Mac: AirDrop it there, open it, then install it in System Settings → General →")
         self.out("    Device Management (it asks for your password). It must be installed before you paste the block.")
 
@@ -112,8 +123,13 @@ class AppJoin(Procedure):
                 raise StepError(f"{r.control_host} did not print a pre-auth key")
             keys[r.name] = key
         block = apple.login_block(self.site, self.regions, keys, self.region)
-        copied = self.clipboard(block)
         self.out(f"    made a single-use, {pins.JOIN_CODE_EXPIRY} key in each region for user {self.site.owner_user}")
+        if self.here:
+            self.out("    adding an account for each region to the Tailscale app here; the keys are not shown or stored")
+            if self.local.run(block, self.out) != 0:
+                raise StepError("the Tailscale app did not take the accounts; see above")
+            return
+        copied = self.clipboard(block)
         self.out("    On the Mac, with the Tailscale app installed and the profile in place, paste this into Terminal"
                  + (" (it is on the clipboard):" if copied else ":"))
         self.show("\n" + block)
@@ -259,6 +275,13 @@ class AppJoin(Procedure):
         except self.errors as e:
             self.out(f"Could not update the cross-region names: {e}")
         block = apple.logout_block(self.site)
+        if self.here:
+            self.out("\n== leaving every account in the Tailscale app here")
+            self.local.run(block, self.out)
+            self.out("Remove the profile in System Settings → General → Device Management to drop the CA and settings.")
+            if self.forget:
+                self.forget(self)
+            return
         copied = self.clipboard(block)
         self.out("\nOn the Mac: remove the profile in System Settings → General → Device Management, and paste this"
                  + (" (on the clipboard)" if copied else "") + " to leave every account:")
@@ -269,12 +292,15 @@ class AppJoin(Procedure):
     # --- printing ---------------------------------------------------------------------
 
     def summary_header(self, checks=None):
-        out = [f"{self.name} → a Mac with the Tailscale app, personal device of {self.site.owner_user} in "
+        out = [f"{self.name} → {'this Mac' if self.here else 'a Mac'} with the Tailscale app, personal device of {self.site.owner_user} in "
                f"{', '.join(r.name for r in self.regions)}; starts on {self.region.name}"]
         for r in self.regions:
             out.append(f"  {r.name:<12}  {r.server_url}, name {self.label}.{r.name}.{r.base_domain}")
-        out += [f"  on the Mac    install the profile (AirDrop), paste one block in Terminal; no SSH, no tn",
-                f"  this machine  writes {self.profile_path.parent}/{self.name}.*, makes single-use keys"]
+        if self.here:
+            out.append("  this Mac      you install the profile when it opens; tn then adds the accounts to the app")
+        else:
+            out.append("  on the Mac    install the profile (AirDrop), paste one block in Terminal; no SSH, no tn")
+        out.append(f"  this machine  writes {self.profile_path.parent}/{self.name}.*, makes single-use keys")
         if checks is None:
             out.append("  checks        not run (--offline)")
         elif checks["fails"]:
@@ -318,7 +344,36 @@ class AppJoin(Procedure):
     # --- the record ---------------------------------------------------------------------
 
     def record(self):
-        return {"ssh": None, "app": True, "role": "personal", "region": self.region.name, "os": "macos"}
+        return {"ssh": None, "app": True, "here": self.here, "role": "personal", "region": self.region.name,
+                "os": "macos"}
+
+
+class Local:
+    """This machine, when it is the Mac with the app."""
+
+    def problems(self):
+        out = []
+        if not Path(apple.APP).exists():
+            out.append(f"the Tailscale app is not in {apple.APP}; install the standalone build from "
+                       "https://tailscale.com/download/mac and open it once")
+        if Path(macos.PLIST).exists():
+            out.append("this Mac runs tailscaled from tn join (command line); roll that back first, or keep it")
+        elif subprocess.run(["pgrep", "-x", "tailscaled"], capture_output=True).returncode == 0:
+            out.append("a tailscaled daemon runs here (Homebrew?); the app and it would fight over routes and DNS")
+        return out
+
+    def open(self, path):
+        subprocess.run(["open", str(path)], check=False)
+
+    def run(self, block, out):
+        """Run a block here with bash; its output (never a key) is shown."""
+        p = subprocess.Popen(["/bin/bash", "-s"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True)
+        p.stdin.write(block)
+        p.stdin.close()
+        for line in p.stdout:
+            out(f"    {line.rstrip()}")
+        return p.wait()
 
 
 def copy_to_clipboard(text):

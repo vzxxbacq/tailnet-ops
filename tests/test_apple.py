@@ -133,20 +133,21 @@ class AppJoinTest(TempDirTest):
         job.sleep = lambda s: None
         return job
 
-    def responses(self, nodes=None):
+    @staticmethod
+    def responses(nodes=None):
         return {join.USERS_JSON: json.dumps([{"id": 3, "name": "owner"}]),
                 join.NODES_JSON: json.dumps(nodes if nodes is not None else [{"id": 9, "given_name": "air"}]),
                 join.PREAUTH_KEYS_JSON: "[]"}
 
     def test_check(self):
-        job = self.job(Runner(self.responses()))
+        job = self.job(Runner(AppJoinTest.responses()))
         self.assertEqual(job.check()["fails"], [])
         self.assertEqual(job.users, {"cn": 3, "ovs": 3})
         bad = self.job(Runner({join.USERS_JSON: "[]"}))
         self.assertIn("cn-control has no Headscale user owner", bad.check()["fails"])
 
     def test_apply(self):
-        runner, recorded = Runner(self.responses()), []
+        runner, recorded = Runner(AppJoinTest.responses()), []
         job = self.job(runner, region="ovs")
         job.remember = recorded.append
         self.assertEqual(job.apply(yes=True), 0, "\n".join(self.out))
@@ -164,7 +165,7 @@ class AppJoinTest(TempDirTest):
         self.assertEqual(job.record()["region"], "ovs")
 
     def test_wait_gives_up(self):
-        job = self.job(Runner(self.responses(nodes=[])))
+        job = self.job(Runner(AppJoinTest.responses(nodes=[])))
         clock = iter(range(0, 10 ** 6, 600))
         from tailnet_ops import appjoin
         real = appjoin.time.monotonic
@@ -180,7 +181,7 @@ class AppJoinTest(TempDirTest):
         nodes = [{"id": 9, "given_name": "air", "pre_auth_key": {"id": 4}}]
         keys = [{"id": 4, "used": True, "acl_tags": [], "user": {"name": "owner"}},
                 {"id": 5, "used": True, "acl_tags": ["tag:cn-server"], "user": {"name": "owner"}}]
-        runner = Runner({**self.responses(nodes), join.PREAUTH_KEYS_JSON: json.dumps(keys)})
+        runner = Runner({**AppJoinTest.responses(nodes), join.PREAUTH_KEYS_JSON: json.dumps(keys)})
         job, forgotten = self.job(runner), []
         job.forget = forgotten.append
         job._run_profile()
@@ -193,9 +194,63 @@ class AppJoinTest(TempDirTest):
         self.assertEqual(forgotten, [job])
 
 
+class FakeLocal:
+    def __init__(self, problems=()):
+        self._problems = list(problems)
+        self.opened, self.blocks = [], []
+
+    def problems(self):
+        return self._problems
+
+    def open(self, path):
+        self.opened.append(path)
+
+    def run(self, block, out):
+        self.blocks.append(block)
+        out("cn: joined")
+        return 0
+
+
+class HereTest(TempDirTest):
+    """The Mac with the app is this machine: tn opens the profile and adds the accounts itself."""
+
+    def setUp(self):
+        super().setUp()
+        self.site = self.load_site()
+        self.out, self.shown, self.clip = [], [], []
+
+    def job(self, local):
+        job = AppJoin(self.site, "here-mac", "cn", runner=Runner(AppJoinTest.responses([{"id": 9, "given_name": "here-mac"}])),
+                      out=self.out.append,
+                      show=self.shown.append, ca_pem=CA, clipboard=lambda t: self.clip.append(t) or True,
+                      here=True, local=local)
+        job.sleep = lambda s: None
+        return job
+
+    def test_apply_here(self):
+        local = FakeLocal()
+        job = self.job(local)
+        self.assertEqual(job.apply(yes=True), 0, "\n".join(self.out))
+        self.assertEqual(local.opened, [self.site.directory / "out" / "here-mac.mobileconfig"])
+        self.assertEqual(len(local.blocks), 1)
+        self.assertIn(KEY_CN, local.blocks[0])
+        self.assertEqual((self.clip, self.shown), ([], []))           # nothing to paste, nothing shown
+        self.assertFalse(any(KEY_CN in line or KEY_OVS in line for line in self.out))
+        self.assertTrue(job.record()["here"])
+        job.rollback(yes=True)
+        self.assertIn("logout", local.blocks[-1])
+
+    def test_problems_here_stop_it(self):
+        job = self.job(FakeLocal(["the Tailscale app is not in /Applications/Tailscale.app"]))
+        self.assertEqual(job.apply(yes=True), 1)
+        self.assertTrue(any("the Tailscale app is not in" in line for line in self.out))
+
+
 class RecordTest(TempDirTest):
     def test_an_app_mac_is_not_this_machine(self):
         site = self.load_site()
         site.joined["air"] = {"ssh": None, "app": True, "role": "personal", "region": "cn", "os": "macos"}
         self.assertEqual(targets.find_record(site, None), (None, None))
         self.assertEqual(targets.find_record(site, "air")[0], "air")
+        site.joined["air"]["here"] = True                             # set up on this machine
+        self.assertEqual(targets.find_record(site, None)[0], "air")

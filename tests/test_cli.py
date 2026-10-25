@@ -125,9 +125,10 @@ class CliTest(TempDirTest):
         self.assertEqual(rc, 0, err)
         self.assertIn("air → a Mac with the Tailscale app, personal device of owner in ovs, cn; starts on ovs", out)
         self.assertIn("Write the app's profile", out)
-        rc, _out, err = run_cli("join", "plan", "--app", "--offline", "--site", str(self.site))
-        self.assertEqual(rc, 1)
-        self.assertIn("name the Mac", err)
+        with mock.patch("tailnet_ops.targets.this_machine_name", return_value="here-mac"):
+            rc, out, err = run_cli("join", "plan", "--app", "--offline", "--site", str(self.site))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("here-mac → this Mac with the Tailscale app", out)       # no name: this machine
         sitemod.write_joined(self.site, {"air": {"ssh": None, "app": True, "role": "personal", "region": "cn"}})
         rc, out, _err = run_cli("join", "list", "--site", str(self.site))
         self.assertIn("air   Tailscale app  personal  cn", out)

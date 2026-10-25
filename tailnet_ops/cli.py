@@ -150,19 +150,30 @@ def cmd_join(args):
         return join_list(site, args)
     options = join_options(args)
     ui = tui.UI()
+    here = None
     if action is None:
         if not ui.tty:
             raise ValueError("without a terminal, give an action: tn join plan|apply|verify|rollback [host] [options]")
         print(ui.bold("tn join") + ui.dim(" · add a machine to the tailnet. Nothing changes until you type yes.\n"))
-        answers = targets.ask(site, ui, remote.ssh_aliases(), host=host, given=options, pick=args.host is None)
+        answers = targets.ask(site, ui, remote.ssh_aliases(), host=host, given={**options, "app": args.app},
+                              pick=args.host is None, detect_os=None if args.offline else detect_os)
         host = answers.pop("host")
         args.app = answers.pop("app", False) or args.app
+        here = answers.pop("here", None)
         options.update({k: v for k, v in answers.items() if v is not None})
-        if args.app:
-            host = options.get("name")
-    rec_name, rec = targets.find_record(site, host) if host or not args.app else (None, None)
-    if args.app or (rec or {}).get("app"):
-        return join_app(site, args, action, rec_name or host, options.get("region") or (rec or {}).get("region"), ui)
+    if not args.app:
+        rec_name, rec = targets.find_record(site, host)
+        if (rec or {}).get("app"):           # joined with the app: verify and rollback know it from the record
+            args.app, here, host = True, bool(rec.get("here")), None if rec.get("here") else rec_name
+    if args.app:
+        if here is None:
+            here = host is None
+        name = options.get("name") or (None if here else host)
+        if name is None:
+            rec_name, rec = targets.find_record(site, None)
+            name = rec_name if (rec or {}).get("app") else targets.this_machine_name()
+        _n, rec = targets.find_record(site, name)
+        return join_app(site, args, action, name, options.get("region") or (rec or {}).get("region"), ui, here)
     target = targets.resolve(site, host, **options, detect_os=None if args.offline else detect_os)
     console = Console(redactor(site) if args.redact else identity,
                       run_log(site, f"join-{action or 'ask'}", target.name))
@@ -196,8 +207,9 @@ def code_asker(ui):
     return ask
 
 
-def join_app(site, args, action, name, region, ui):
-    """A Mac with the Tailscale app: tn runs here and hands the Mac a profile and one block to paste."""
+def join_app(site, args, action, name, region, ui, here=False):
+    """A Mac with the Tailscale app. here: this machine, which tn sets up itself; else tn hands the
+    Mac a profile and one block to paste."""
     from .appjoin import AppJoin
     if not name:
         raise ValueError("name the Mac: tn join plan <name> --app")
@@ -206,7 +218,7 @@ def join_app(site, args, action, name, region, ui):
     region = region or next(iter(site.regions))
     console = Console(redactor(site) if args.redact else identity, run_log(site, f"join-{action or 'ask'}", name))
     runner = remote.SSHRunner(out=console.out, log=console.log)
-    job = AppJoin(site, name, region, runner=runner, out=console.out, show=console.show)
+    job = AppJoin(site, name, region, runner=runner, out=console.out, show=console.show, here=here)
 
     def remember(j):
         site.joined[j.name] = j.record()
@@ -216,7 +228,9 @@ def join_app(site, args, action, name, region, ui):
     job.forget = lambda j: targets.forget(site, j)
     if ui.tty and not args.yes:
         job.pause = input
-    later = f"./tn join apply {name} --app --region {job.region.name}"
+    later = (f"./tn join apply --app --region {job.region.name}" + ("" if name == targets.this_machine_name()
+                                                                      else f" --name {name}") if here
+             else f"./tn join apply {name} --app --region {job.region.name}")
     try:
         if action is None:
             return join_asked(job, console, ui, later=later, offline=args.offline)

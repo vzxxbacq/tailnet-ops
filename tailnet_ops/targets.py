@@ -62,7 +62,8 @@ def from_site(site, alias):
 def find_record(site, host):
     """(name, record) of a joined machine by name or SSH alias; host None = this machine."""
     for name, rec in site.joined.items():
-        this = rec.get("ssh") is None and not rec.get("app")       # a Mac with the app is not this machine
+        # A Mac with the app is this machine only when tn set it up here.
+        this = rec.get("ssh") is None and (not rec.get("app") or rec.get("here"))
         if (host is None and this) or (host is not None and host in (name, rec.get("ssh"))):
             return name, rec
     return None, None
@@ -158,22 +159,29 @@ def _joined_hint(rec):
     return f"joined: {rec.get('role', 'server')} in {rec.get('region')}" if rec else ""
 
 
-def ask_app(site, ui, given=None):
+CLIENTS = [
+    ("cli", "Command line (tailscaled)", "a daemon: starts at boot and keeps running, no window; tn installs it"),
+    ("app", "Tailscale app", "the menu bar app: you install it; tn gives it a profile and its accounts"),
+]
+
+
+def ask_app(site, ui, given=None, default_name="air"):
     """A Mac with the Tailscale app: its name, and the region it starts on."""
     given = given or {}
-    out = {"host": None, "app": True}
-    if given.get("name") is None:
-        out["name"] = ui.text("Its name in the tailnet", "air",
-                              check=lambda v: None if dns_label(v) == v.lower() else "letters, digits and '-'")
+    out = {"app": True}
     if given.get("region") is None:
         regions = [(r.name, r.name, f"Headscale on {r.control_host}") for r in site.regions.values()]
         out["region"] = ui.select("Which region does it start in?", regions)
+    if given.get("name") is None:
+        out["name"] = ui.text("Its name in the tailnet", default_name,
+                              check=lambda v: None if dns_label(v) == v.lower() else "letters, digits and '-'")
     return out
 
 
-def ask(site, ui, ssh_aliases=(), host=None, given=None, pick=True):
-    """Ask which machine joins (unless pick is False: then it is host), how, where and under which
-    name, skipping what the command line already gave. Returns resolve()'s keyword arguments."""
+def ask(site, ui, ssh_aliases=(), host=None, given=None, pick=True, detect_os=None):
+    """Ask which machine joins (unless pick is False: then it is host), with which Tailscale, how,
+    where and under which name, skipping what the command line already gave. Returns resolve()'s
+    keyword arguments, plus "app" (and "here") for the Tailscale app."""
     given = given or {}
     here = this_machine_name()
     here_name, here_rec = find_record(site, None)
@@ -183,11 +191,11 @@ def ask(site, ui, ssh_aliases=(), host=None, given=None, pick=True):
         for alias in ssh_aliases:
             _n, rec = find_record(site, alias)
             machines.append((alias, alias, _site_role(site, alias) or _joined_hint(rec) or "over SSH"))
-        machines.append(("app", "A Mac with the Tailscale app…", "a laptop: a profile to install and one paste; no SSH"))
+        machines.append(("nossh", "A Mac I cannot SSH to…", "a laptop, say: it uses the Tailscale app"))
         machines.append(("?", "Another machine…", "type its SSH alias"))
         host = ui.select("Which machine joins?", machines)
-        if host == "app":
-            return ask_app(site, ui, given)
+        if host == "nossh":
+            return {"host": None, "here": False, **ask_app(site, ui, given)}
         if host == "?":
             host = ui.text("SSH alias", check=lambda v: None if v and dns_label(v) else "an SSH alias from ~/.ssh/config")
     rec_name, rec = find_record(site, host)
@@ -198,6 +206,13 @@ def ask(site, ui, ssh_aliases=(), host=None, given=None, pick=True):
         ui.note(f"{host} is the {_site_role(site, host)}: it joins {site.host_region(host).name} as a server.")
         return {"host": host}
     out = {"host": host}
+    os_name = given.get("os_name") or rec.get("os") or (this_os() if host is None else
+                                                         (detect_os(host) if detect_os else None))
+    if os_name == "macos" and not given.get("app"):
+        default = 1 if rec.get("app") else 0
+        if ui.select("Which Tailscale does it use?", CLIENTS, default=default) == "app":
+            return {"host": host, "here": host is None,
+                    **ask_app(site, ui, given, rec_name or (here if host is None else host))}
     role = given.get("role")
     if role is None:
         roles = [("personal", "Personal device", "you, in every region; switch with tailscale switch"),

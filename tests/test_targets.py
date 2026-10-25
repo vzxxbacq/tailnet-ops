@@ -112,11 +112,29 @@ class AskTest(TempDirTest):
 
     def test_this_machine_as_a_personal_device(self):
         ui = FakeUI({"Which machine joins?": None, "Which region does it start in?": "ovs"})
-        with mock.patch.object(targets, "this_machine_name", return_value="owners-mac"):
+        with mock.patch.object(targets, "this_machine_name", return_value="owners-mac"), \
+                mock.patch.object(targets, "this_os", return_value="linux"):
             got = targets.ask(self.site, ui, ["cn-control", "box"])
         self.assertEqual(got, {"host": None, "role": "personal", "region": "ovs", "name": "owners-mac"})
         self.assertEqual(ui.asked, ["Which machine joins?", "How does it join?", "Which region does it start in?",
                                     "Its name in the tailnet"])
+
+    def test_a_mac_chooses_the_app_or_the_command_line(self):
+        ui = FakeUI({"Which machine joins?": None, "Which Tailscale does it use?": "app"})
+        with mock.patch.object(targets, "this_machine_name", return_value="owners-mac"), \
+                mock.patch.object(targets, "this_os", return_value="macos"):
+            got = targets.ask(self.site, ui, [])
+        self.assertEqual(got, {"host": None, "here": True, "app": True, "region": "cn", "name": "owners-mac"})
+        ui = FakeUI({"Which machine joins?": "box", "Which Tailscale does it use?": "cli"})
+        got = targets.ask(self.site, ui, ["box"], detect_os=lambda h: "macos")
+        self.assertEqual(got["role"], "server")                       # the command line: the usual questions
+        self.assertIn("Which Tailscale does it use?", ui.asked)
+        ui = FakeUI({"Which machine joins?": "box"})
+        targets.ask(self.site, ui, ["box"], detect_os=lambda h: "linux")
+        self.assertNotIn("Which Tailscale does it use?", ui.asked)    # Linux: the command line only
+        ui = FakeUI({"Which machine joins?": "nossh"})
+        got = targets.ask(self.site, ui, [])
+        self.assertEqual(got, {"host": None, "here": False, "app": True, "region": "cn", "name": "air"})
 
     def test_a_site_host_needs_no_more_questions(self):
         ui = FakeUI({"Which machine joins?": "cn-control"})

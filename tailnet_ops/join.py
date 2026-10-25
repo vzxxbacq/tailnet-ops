@@ -931,11 +931,12 @@ class Join(Procedure):
                 Step(
                     4, "tailscaled",
                     [f"Write {macos.PLIST} (port udp/{self.port}, --no-logs-no-support), mark {macos.TS_STATE},",
-                     "start it with launchctl bootstrap, wait until it answers."],
+                     "start it with launchctl bootstrap (RunAtLoad, KeepAlive: it starts at boot and restarts if it",
+                     "stops), wait until it answers."],
                     [Action(a, "write the launchd job and start", macos.SERVICE, "host", True)],
                     rollback=macos.ROLLBACK_SERVICE,
                     rollback_note=f"stop tailscaled, remove the launchd job and {macos.TS_STATE}",
-                    run=self._run_service, brief=f"Start tailscaled on udp/{self.port}",
+                    run=self._run_service, brief="Start tailscaled, at boot too",
                     undo_brief="stop it, remove the job and state",
                 ),
             ]
@@ -977,11 +978,11 @@ class Join(Procedure):
             Step(
                 4, "tailscaled",
                 [f"Write {TS_UNIT} (port udp/{self.port}, --no-logs-no-support), mark {TS_STATE},",
-                 "systemctl enable --now tailscaled, wait until it answers."],
+                 "systemctl enable --now tailscaled (it starts at boot and restarts on failure), wait until it answers."],
                 [Action(a, "write the unit and start", self._service(), "host", True)],
                 rollback=ROLLBACK_SERVICE,
                 rollback_note=f"stop and disable tailscaled, remove the unit, {TS_STATE} and {TS_CACHE}",
-                run=self._run_service, brief=f"Start tailscaled on udp/{self.port}",
+                run=self._run_service, brief="Start tailscaled, at boot too",
                 undo_brief="stop it, remove the unit and state",
             ),
         ]
@@ -1082,6 +1083,9 @@ class Join(Procedure):
 
     # --- printing ---------------------------------------------------------------------
 
+    def _starter(self):
+        return "launchd" if self.macos else "systemd"
+
     def _adds(self):
         if self.macos:
             return f"Homebrew's tailscale (unless there), {macos.PLIST}, {macos.TS_STATE}, the site CA in the keychain"
@@ -1120,7 +1124,7 @@ class Join(Procedure):
         if not self.personal:
             out.append(f"  tags          {', '.join(self.tags)}")
         out += [
-            f"  tailscaled    udp/{self.port}, no log upload"
+            f"  tailscaled    udp/{self.port}, no log upload; a daemon that starts at boot ({self._starter()})"
             + mark(port in ("free", "ours"), "port free" if port == "free" else "already ours", "port in use"),
             f"  options       {self._options()}",
         ]
@@ -1162,7 +1166,7 @@ class Join(Procedure):
             first,
             f"  login server  {login}",
             f"  tags          {tags}",
-            f"  tailscaled    udp/{self.port}, no log upload",
+            f"  tailscaled    udp/{self.port}, no log upload; a daemon that starts at boot ({self._starter()})",
             f"  options       {self._options()}",
             f"  adds          {self._adds()}",
             "  leaves alone  everything else",
