@@ -148,6 +148,14 @@ else
   flag "cannot reach $LOGIN with the site CA: $out"; echo "TN-FACT login=fail"
 fi
 if ours_unit; then echo "TN-FACT joined=ours"; else echo "TN-FACT joined=no"; fi
+# Only when programs ask systemd-resolved's stub (127.0.0.53) does accept-dns hand just the tailnet
+# suffix to MagicDNS. Where /etc/resolv.conf names upstream servers directly, programs bypass
+# resolved, and tailscaled may rewrite the file, so tailnet-ops leaves DNS alone there.
+if systemctl is-active --quiet systemd-resolved && [ "$(readlink -f /etc/resolv.conf)" = /run/systemd/resolve/stub-resolv.conf ]; then
+  echo "TN-FACT resolved=yes"
+else
+  echo "TN-FACT resolved=no"
+fi
 
 if [ "$fail" != 0 ]; then die "preflight failed; nothing was changed"; fi
 echo "preflight passed; nothing was changed"
@@ -310,16 +318,25 @@ def preauth_key(tags):
 
 
 
-def up_argv(region, alias, netfilter_mode, accept_routes=False):
+def _flag(value):
+    return "true" if value else "false"
+
+
+def up_argv(region, alias, netfilter_mode, accept_routes=False, accept_dns=False):
     argv = [TS_BIN, "up", f"--login-server={region.server_url}", "--auth-key=file:/dev/stdin",
-            f"--hostname={dns_label(alias)}", "--accept-dns=false",
-            f"--accept-routes={'true' if accept_routes else 'false'}", "--timeout=60s"]
+            f"--hostname={dns_label(alias)}", f"--accept-dns={_flag(accept_dns)}",
+            f"--accept-routes={_flag(accept_routes)}", "--timeout=60s"]
     if netfilter_mode:
         argv.append(f"--netfilter-mode={netfilter_mode}")
     return argv
 
 
 # stderr is dropped: netcheck prints a format warning and log lines there, which would break the JSON.
+def set_prefs(accept_routes, accept_dns):
+    return (f'"$TS_BIN" set --accept-routes={_flag(accept_routes)} --accept-dns={_flag(accept_dns)}\n'
+            f'echo "accept-routes {_flag(accept_routes)}, accept-dns {_flag(accept_dns)}"\n')
+
+
 STATUS_JSON = '"$TS_BIN" status --json 2>/dev/null\n'
 NETCHECK_JSON = '"$TS_BIN" netcheck --format=json 2>/dev/null\n'
 NODES_JSON = '"$BIN" nodes list -o json 2>/dev/null\n'
@@ -412,6 +429,7 @@ class Join(Procedure):
         # region; a border does not, or it would route the alias range to itself through tailscale0.
         self.lines_here = render.line_peers(site, self.region)
         self.accept_routes = bool(self.lines_here) and not site.is_line_end(alias)
+        self.dns_setting = settings.accept_dns if settings else None
         self.control = self.region.control_host
         self.runner = runner
         self.out = out
@@ -449,10 +467,19 @@ class Join(Procedure):
                                  check=False, echo=False)
         fails = [line.split("FAIL", 1)[1].strip() for line in result.output.splitlines()
                  if line.lstrip().startswith("FAIL ")]
+        self.facts.update(result.facts())
         if result.rc == 255 or (result.rc != 0 and not fails and "TN-FACT arch=" not in result.output):
             last = result.output.strip().splitlines()[-1:] or ["no answer"]
             fails = [f"cannot log in over SSH as root: {last[0]}"]
         return {"facts": result.facts(), "fails": fails}
+
+    def _dns_text(self):
+        if self.dns_setting is not None:
+            return f"accept-dns {'on' if self.dns_setting else 'off'} ([hosts.{self.alias}])"
+        if "resolved" not in self.facts:
+            return "accept-dns on if the host runs systemd-resolved"
+        return ("accept-dns on (systemd-resolved: only ." + self.region.base_domain + " goes to MagicDNS)"
+                if self.accept_dns else "accept-dns off (programs do not use systemd-resolved's stub; DNS stays as it is)")
 
     def _routes_text(self):
         if self.accept_routes:
@@ -491,15 +518,24 @@ class Join(Procedure):
     def _status(self):
         return _json(self._host(STATUS_JSON, echo=False).output, "tailscale status")
 
+    @property
+    def accept_dns(self):
+        """[hosts] accept_dns, else on where preflight found systemd-resolved."""
+        if self.dns_setting is not None:
+            return self.dns_setting
+        return self.facts.get("resolved") == "yes"
+
     def _run_join(self):
         status = self._status()
         if status.get("BackendState") == "Running":
-            self.out("    already joined; no new key made")
+            self.out("    already joined; no new key made; bringing its settings in line with the plan")
+            self._host(set_prefs(self.accept_routes, self.accept_dns))
             return
         self.out(f"    a single-use, {pins.PREAUTH_KEY_EXPIRY} key for {', '.join(self.tags)} goes from "
                  f"{self.control} straight into `tailscale up` on {self.alias}; it is never shown or stored here")
         self.runner.pipe(self.control, scripts.wrap(self.control_prelude, preauth_key(self.tags)),
-                         self.alias, up_argv(self.region, self.alias, self.netfilter_mode, self.accept_routes))
+                         self.alias, up_argv(self.region, self.alias, self.netfilter_mode, self.accept_routes,
+                                             self.accept_dns))
 
     def _run_verify(self):
         status = self._status()
@@ -681,8 +717,11 @@ class Join(Procedure):
                 [
                     Action(self.control, "make the key (stdout only)", preauth_key(self.tags), "control", True),
                     Action(a, "join with the key on stdin: "
-                           + " ".join(shlex.quote(x) for x in up_argv(r, a, self.netfilter_mode, self.accept_routes)),
+                           + " ".join(shlex.quote(x) for x in up_argv(r, a, self.netfilter_mode, self.accept_routes,
+                                                                       self.accept_dns)),
                            None, None, True),
+                    Action(a, "if it is already joined, set the same options instead",
+                           set_prefs(self.accept_routes, self.accept_dns), "host", True),
                 ],
                 rollback=LOGOUT,
                 rollback_note=f"log out, then delete the node named {dns_label(a)} on {self.control} "
@@ -742,7 +781,7 @@ class Join(Procedure):
             f"  tags          {', '.join(self.tags)}",
             f"  tailscaled    udp/{self.port}, no log upload"
             + mark(port in ("free", "ours"), "port free" if port == "free" else "already ours", "port in use"),
-            f"  options       accept-dns off, {self._routes_text()}, netfilter {nf}",
+            f"  options       {self._dns_text()}, {self._routes_text()}, netfilter {nf}",
         ]
         if facts:
             out.append(f"  host          {facts.get('os', '?')}, {facts.get('machine', '?')}"
@@ -766,7 +805,7 @@ class Join(Procedure):
             f"  login server  {r.server_url} (Headscale on {self.control})",
             f"  tags          {', '.join(self.tags)}",
             f"  tailscaled    udp/{self.port}, no log upload",
-            f"  options       accept-dns off, {routes}, netfilter {nf}",
+            f"  options       {self._dns_text()}, {routes}, netfilter {nf}",
             f"  adds          tailscale, tailscaled, tailscaled.service, {TS_STATE}, the site CA",
             "  leaves alone  everything else",
         ])
@@ -791,6 +830,19 @@ class Join(Procedure):
 
     def preflight(self):
         return self.run_once(self._run_preflight)
+
+    def apply(self, yes=False, ask=input, checks=None):
+        """Read the host first, as `tn join plan` does, so the plan id shown here matches."""
+        try:
+            checks = self.check()
+        except self.errors as e:
+            self.out(f"FAILED reading {self.alias}: {e}")
+            return 1
+        if checks["fails"]:
+            self.out(self.summary_text(checks))
+            self.out("Not applied; nothing changed.")
+            return 1
+        return super().apply(yes=yes, ask=ask, checks=checks)
 
     def verify(self):
         return self.run_once(self._run_verify)

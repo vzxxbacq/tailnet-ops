@@ -149,6 +149,7 @@ class HostSettings:
     tailscale_port: int = None   # fixed UDP port for tailscaled (--port)
     netfilter_mode: str = None   # tailscale up --netfilter-mode
     region: str = None           # needed only for hosts that are no region's control or checker host
+    accept_dns: bool = None      # default: on where systemd-resolved runs (only <suffix> goes to MagicDNS)
     tags: list = None            # default: see Site.host_tags
 
 
@@ -308,7 +309,7 @@ REGION_KEYS = {
     "tags": list,
 }
 REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int, "alias_ipv4": str, "base_domain": str}
-HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str, "region": str, "tags": list}
+HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str, "region": str, "tags": list, "accept_dns": bool}
 NETFILTER_MODES = ("on", "nodivert", "off")
 LINE_OPTIONAL = {"port": int, "tunnel_ipv4": str}
 LINE_KEYS = {

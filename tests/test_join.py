@@ -158,7 +158,8 @@ class JoinApplyTest(TempDirTest):
     def test_needs_yes(self):
         runner = FakeRunner()
         self.assertEqual(self.job(runner).apply(ask=lambda p: "no"), 1)
-        self.assertEqual(runner.calls, [])
+        # Only the read-only preflight ran, to show the plan.
+        self.assertTrue(runner.calls and all('pass "/dev/net/tun"' in c[2] for c in runner.calls))
 
     def test_runs_every_step(self):
         state = {"joined": False}
@@ -198,7 +199,8 @@ class JoinApplyTest(TempDirTest):
                         kinds.append((name, host, privileged))
                         break
         self.assertEqual(kinds, [
-            ("preflight", "cn-probe", True),
+            ("preflight", "cn-probe", True),   # the check that shows the plan
+            ("preflight", "cn-probe", True),   # step 1
             ("stage", "cn-probe", False),
             ("upload", "cn-probe", "/tmp/tn-tailscale.abc123/tailscale"),
             ("upload", "cn-probe", "/tmp/tn-tailscale.abc123/tailscaled"),
@@ -229,6 +231,25 @@ class JoinApplyTest(TempDirTest):
             self.job(runner)._run_verify()
         self.assertIn("cannot reach ovs-line at 10.255.2.4 through line line1", str(cm.exception))
 
+    def test_accept_dns_follows_the_hosts_resolver(self):
+        job = self.job(FakeRunner())
+        self.assertFalse(job.accept_dns)                  # unknown until the host is read
+        job.facts["resolved"] = "yes"
+        self.assertTrue(job.accept_dns)
+        self.assertIn("--accept-dns=true", join.up_argv(self.site.regions["cn"], "x", None, True, job.accept_dns))
+        site = self.load_site(example_text(("[[lines]]", "[hosts.cn-probe]\naccept_dns = false\n\n[[lines]]")), name="d")
+        pinned = join.Join(site, "cn-probe", ops=FakeOps())
+        pinned.facts["resolved"] = "yes"
+        self.assertFalse(pinned.accept_dns)
+
+    def test_joined_host_gets_its_settings_updated(self):
+        runner = FakeRunner(responses(status=status()))
+        job = self.job(runner)
+        job.facts["resolved"] = "yes"
+        job._run_join()
+        self.assertTrue(any('set --accept-routes=true --accept-dns=true' in c[2] for c in runner.calls if c[0] == "run"))
+        self.assertFalse(any(c[0] == "pipe" for c in runner.calls))
+
     def test_borders_do_not_take_routes(self):
         site = self.load_site(example_text(('initiator = "cn-gateway"', 'initiator = "cn-probe"')), name="b")
         self.assertFalse(join.Join(site, "cn-probe", ops=FakeOps()).accept_routes)
@@ -242,7 +263,7 @@ class JoinApplyTest(TempDirTest):
         self.assertEqual(self.job(runner, ops=ops).apply(yes=True), 0, "\n".join(self.out))
         self.assertEqual(ops.calls, [])
         self.assertFalse(any(c[0] in ("upload", "pipe") for c in runner.calls))
-        self.assertIn("    already joined; no new key made", self.out)
+        self.assertIn("    already joined; no new key made; bringing its settings in line with the plan", self.out)
 
     def test_verify_catches_problems(self):
         runner = FakeRunner(responses(status=status(ip="100.64.2.9", tags=["tag:cn-gateway"]), derp=902, nodes=[]))
