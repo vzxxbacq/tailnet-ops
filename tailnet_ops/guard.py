@@ -17,7 +17,7 @@ from . import privacy
 from .remote import ssh_config
 from .site import SiteError, read_joined, read_toml, resolve_dir
 
-BLOCKED_NAMES = {"site.toml", "inventory.toml", "joined.json"}
+BLOCKED_NAMES = {"site.toml", "inventory.toml", "joined.json", "phones.json"}
 BLOCKED_SUFFIXES = {".key", ".pem", ".csr", ".crt", ".p12", ".pfx", ".srl", ".sqlite", ".db", ".mobileconfig"}
 
 

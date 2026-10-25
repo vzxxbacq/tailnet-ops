@@ -15,8 +15,12 @@ from .privacy import CGNAT, TOOL_NET
 DEFAULT_SITE_DIR = "~/.config/tailnet-ops"
 SITE_FILE = "site.toml"
 JOINED_FILE = "joined.json"
+PHONES_FILE = "phones.json"
+PHONES_DIR = "phones"
 DEFAULT_DNS_SUFFIX = "tailnet.internal"
 NOTES_FILE = "notes.md"
+# Phones' addresses on the regions' entries: the same range, and a phone the same address, everywhere.
+DEFAULT_ENTRY_IPV4 = "10.255.254.0/24"
 
 # Tailscale keeps these inside 100.64.0.0/10 for itself (MagicDNS 100.100.100.100, ChromeOS).
 TAILSCALE_RESERVED = (
@@ -80,6 +84,7 @@ class Region:
     metrics_port: int = pins.DEFAULT_METRICS_PORT
     grpc_port: int = pins.DEFAULT_GRPC_PORT
     alias_ipv4: str = None  # how this tailnet's addresses appear in the other region, through a line
+    entry_port: int = None  # UDP port of the WireGuard entry for phones on the control host; None = no entry
 
     @property
     def alias_net(self):
@@ -165,6 +170,21 @@ class Site:
     directory: Path = None
     dns_suffix: str = DEFAULT_DNS_SUFFIX
     joined: dict = field(default_factory=dict)   # name -> how tn joined it (joined.json), for machines not in site.toml
+    entry_ipv4: str = DEFAULT_ENTRY_IPV4         # phones' range on the entries; .1 is each entry itself
+    phones: dict = field(default_factory=dict)   # name -> {"address", "public_key"} (phones.json), from tn phone
+
+    @property
+    def entry_net(self):
+        return ipaddress.IPv4Network(self.entry_ipv4)
+
+    @property
+    def entry_address(self):
+        """Each entry's own address in the phones' range."""
+        return str(next(self.entry_net.hosts()))
+
+    def entry_regions(self):
+        """The regions whose control host runs a phone entry."""
+        return [r for r in self.regions.values() if r.entry_port]
 
     def region(self, name):
         if name not in self.regions:
@@ -231,6 +251,10 @@ class Site:
     @property
     def runs_dir(self):
         return self.directory / "runs"
+
+    @property
+    def phones_dir(self):
+        return self.directory / PHONES_DIR
 
 
 # --- the directory -------------------------------------------------------------
@@ -299,7 +323,7 @@ def write_private(path, data, mode=0o600):
 # --- site.toml -------------------------------------------------------------------
 
 SITE_KEYS = {"name": str, "owner_user": str}
-SITE_OPTIONAL = {"dns_suffix": str}
+SITE_OPTIONAL = {"dns_suffix": str, "entry_ipv4": str}
 REGION_KEYS = {
     "control_host": str,
     "check_from": str,
@@ -315,7 +339,7 @@ REGION_KEYS = {
     "official_derp": bool,
     "tags": list,
 }
-REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int, "alias_ipv4": str, "base_domain": str}
+REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int, "alias_ipv4": str, "base_domain": str, "entry_port": int}
 HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str, "region": str, "tags": list, "accept_dns": bool}
 NETFILTER_MODES = ("on", "nodivert", "off")
 LINE_OPTIONAL = {"port": int, "tunnel_ipv4": str}
@@ -416,9 +440,11 @@ def parse(data, known_host=None, directory=None):
         if pub is not None and (pub.is_unspecified or pub.is_loopback):
             problems.append(f"{where}.public_ipv4: clients cannot reach {pub}")
         _ipv4(f"{where}.listen_ipv4", r["listen_ipv4"], problems)
-        for key in ("port", "stun_port", "metrics_port", "grpc_port"):
+        for key in ("port", "stun_port", "metrics_port", "grpc_port", "entry_port"):
             if key in r:
                 _port(f"{where}.{key}", r[key], problems)
+        if r.get("entry_port") == r["stun_port"]:
+            problems.append(f"{where}.entry_port: {r['entry_port']} is the STUN port (both UDP)")
         tcp_ports = [r["port"], r.get("metrics_port", pins.DEFAULT_METRICS_PORT), r.get("grpc_port", pins.DEFAULT_GRPC_PORT)]
         if len(set(tcp_ports)) != len(tcp_ports):
             problems.append(f"{where}: port, metrics_port and grpc_port must differ")
@@ -543,6 +569,8 @@ def parse(data, known_host=None, directory=None):
             for r in regions.values():
                 if r.control_host == alias and r.stun_port == port:
                     problems.append(f"{where}.tailscale_port: {port} is region {r.name}'s STUN port on this host (both UDP)")
+                if r.control_host == alias and r.entry_port == port:
+                    problems.append(f"{where}.tailscale_port: {port} is region {r.name}'s entry_port on this host (both UDP)")
         mode = h.get("netfilter_mode")
         if mode is not None and mode not in NETFILTER_MODES:
             problems.append(f"{where}.netfilter_mode: use one of {', '.join(NETFILTER_MODES)}")
@@ -593,6 +621,23 @@ def parse(data, known_host=None, directory=None):
                 problems.append(f"{where}: {alias} overlaps {label} ({other})")
         taken.append((where, alias))
 
+    entry_ipv4 = s.get("entry_ipv4", DEFAULT_ENTRY_IPV4)
+    if "entry_ipv4" in s or any(r.entry_port for r in regions.values()):
+        where = "site.entry_ipv4"
+        net = _net(where, entry_ipv4, problems)
+        if net is not None:
+            if net.prefixlen > 29:
+                problems.append(f"{where}: {net} is too small; use a /29 or larger")
+            if not net.is_private or net.overlaps(CGNAT):
+                problems.append(f"{where}: {net} must be a private range outside 100.64.0.0/10")
+            for label, other in taken:
+                if net.overlaps(other):
+                    problems.append(f"{where}: {net} overlaps {label} ({other})")
+    for name, r in regions.items():
+        for ln in lines:
+            if r.entry_port and ln.responder == r.control_host and ln.port == r.entry_port:
+                problems.append(f"regions.{name}.entry_port: {r.entry_port} is line {ln.name}'s port on {ln.responder}")
+
     # Hosts become <name>.<suffix>; with a shared suffix, a name must be unique across regions.
     labels = {}
     for alias in sorted(site_hosts | named | set(host_settings)):
@@ -604,7 +649,7 @@ def parse(data, known_host=None, directory=None):
     if problems:
         raise SiteError(problems)
     return Site(name=s["name"], owner_user=s["owner_user"], dns_suffix=dns_suffix, regions=regions, lines=lines,
-                host_settings=host_settings, directory=directory)
+                host_settings=host_settings, directory=directory, entry_ipv4=entry_ipv4)
 
 
 def read_toml(path):
@@ -633,6 +678,22 @@ def write_joined(directory, joined):
     write_private(Path(directory) / JOINED_FILE, json.dumps(joined, indent=2, sort_keys=True) + "\n")
 
 
+def read_phones(directory):
+    """The phones tn phone added: {name: {"address", "public_key"}}. Written by tn only."""
+    path = Path(directory) / PHONES_FILE
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except ValueError as e:
+        raise SiteError(f"{path}: {e}") from None
+    return data if isinstance(data, dict) else {}
+
+
+def write_phones(directory, phones):
+    write_private(Path(directory) / PHONES_FILE, json.dumps(phones, indent=2, sort_keys=True) + "\n")
+
+
 def load(directory, known_host=None, check_permissions=True):
     """Load and validate <directory>/site.toml, with the record of joined machines."""
     directory = Path(directory)
@@ -643,4 +704,5 @@ def load(directory, known_host=None, check_permissions=True):
     data = read_toml(directory / SITE_FILE)
     site = parse(data, known_host=known_host, directory=directory)
     site.joined = read_joined(directory)
+    site.phones = read_phones(directory)
     return site

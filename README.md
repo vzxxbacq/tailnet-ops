@@ -24,7 +24,7 @@
 | `./tn site check` | 校验站点目录（权限、不在 Git 里）和 `site.toml` |
 | `./tn control plan <region>` | 打印简短计划：每一步做什么、怎么撤销；`--full` 看完整脚本。不改任何东西 |
 | `./tn control preflight <region>` | 只读预检：系统、端口、已有文件 |
-| `./tn control apply <region>` | 按计划部署 Headscale，要输入 `yes`。同时装上名字守护：每分钟更新本区机器的名字，并通过专线两端所在区的控制机互换名单（发起端那台用一把只能交换名单的 SSH 密钥去连另一台），所以任何方式入网、改名、删除，一分钟内各区都能解析 |
+| `./tn control apply <region>` | 按计划部署 Headscale，要输入 `yes`。同时装上名字守护：每分钟更新本区机器的名字，并通过专线两端所在区的控制机互换名单（发起端那台用一把只能交换名单的 SSH 密钥去连另一台），所以任何方式入网、改名、删除，一分钟内各区都能解析。区设了 `entry_port` 时，还装上手机入口（见下文） |
 | `./tn control verify <region>` | 从检查机只读验证 TLS `/health`、DERP、STUN |
 | `./tn control rollback <region>` | 倒序回滚，只删 tailnet-ops 自己做的东西，要输入 `yes` |
 | `./tn join` | 交互式入网：用方向键选机器（本机或 SSH 别名）、方案、地区，填名字；先只读检查并显示计划，再问要不要执行 |
@@ -42,6 +42,11 @@
 | `./tn dns list` | 只读：列出每个区里每个名字解析到的地址（本区直连地址，或经专线的映射地址） |
 | `./tn dns sync` | 立即同步各区的名字，要输入 `yes`；装了名字守护的控制机同时更新它的对端、密钥和名单。入网、拉专线和部署控制机时会自动做 |
 | `./tn dns stop <region>` | 只拿掉这个区控制机上的名字守护（定时器、密钥、允许对端连进来的那行），之后名字回到手动同步；`tn control apply` 会再装上 |
+| `./tn phone add <名字>` | 手机：在本机生成它的 WireGuard 密钥，在入口网段里给它一个地址，加到每个区的手机入口上；在站点目录的 `phones/<名字>/` 写出每个区一份 WireGuard 配置，和一份 Clash 片段（Stash、Clash Meta）：节点、选择组、规则和主机名。要输入 `yes`。再运行一次会刷新主机名和文件 |
+| `./tn phone remove <名字>` | 从每个入口删掉这台手机，并删除它的文件，要输入 `yes` |
+| `./tn phone list` | 列出已加的手机（只读站点目录） |
+| `./tn phone status` | 只读：每个区的入口隧道、入口 DNS、放行规则是否在位，入口能否解析本区名字，以及每台手机最近一次握手和流量 |
+| `./tn phone stop <region>` | 只拿掉这个区控制机上的手机入口（接口、密钥、nft 表、放行规则、定时器和文件），再检查有无残留；Headscale 和其他东西不动。要输入 `yes`。`tn control apply` 会再装上 |
 | `./tn status <region>` | 列出节点 |
 | `make check` | 离线测试，加上对工作区和全部历史的隐私检查 |
 
@@ -55,6 +60,8 @@
 | `--port`、`--netfilter`、`--dns` | 服务商只放行部分端口、Linux 防火墙模式、是否用 MagicDNS |
 
 入网密钥默认由 tn 登录控制机生成，直接通过管道交给 `tailscale up`，不显示也不保存。如果运行 tn 的机器登不上控制机，第 5 步会打印一条可以复制的命令：在能登上控制机的机器上运行它，得到一个一次性链接码（30 分钟有效），再粘贴回来（输入不显示）。这时名字同步和验证里需要控制机的部分会跳过；控制机装了名字守护的话，名字一分钟内自动出现，否则之后在能登上的机器上运行 `tn dns sync`。
+
+手机不装 Tailscale：手机同一时间只能开一个 VPN，那就是代理 App。所以在 `site.toml` 里给区加上 `entry_port`，`tn control apply` 会在控制机上多装一个手机入口：一个 WireGuard 接口 `tn-entry`（在这个 UDP 端口上，密钥在控制机上生成），加上 tailnet-ops 自己的 nft 表 `tn_entry`。手机的代理 App 里每个区一个 WireGuard 节点，按需选用。手机在每个入口上的地址都一样，访问机器也都用同一套地址：本区的内网地址直接到；经专线才能到的区，它的内网地址由入口换成映射地址，走专线过去。除此以外，入口一律不转发，不能当出口上网。入口地址（各区都是 `10.255.254.1`）兼做手机的 DNS：内网名字交给本机的 MagicDNS，答出的就是从这个入口能到的地址；其他名字交给控制机自己的上游 DNS。这个小服务 `tn-entry-dns` 只用标准库，跟着入口一起装、更新、拆除。手机的流量会伪装成控制机发出的，所以别的机器不用加回程路由。哪条防火墙链会挡这些流量，就在那里加带标记的放行规则，由定时器保持在位；回滚时只删这些。
 
 系统自动识别：Linux 用固定版本的 Tailscale，由 systemd 管理；Alpine 等用 OpenRC 的系统改用 OpenRC 服务（supervise-daemon 守护），先装好 `apk add bash curl ca-certificates iproute2 tar iptables`；Mac 用 Homebrew 的 tailscale 和 launchd，站点 CA 加进系统钥匙串（macOS 会弹窗要密码或 Touch ID）。本机的脚本用 sudo 在本机执行，不走 SSH。
 
@@ -84,5 +91,6 @@ It is Python 3.11+ with the standard library only, and drives your hosts over SS
 | `./tn join apply <name> --app` | A Mac with the Tailscale app: a configuration profile to install and one block to paste; no SSH to it |
 | `./tn line plan\|apply\|verify\|rollback <line>` | A WireGuard line between two regions, with alias ranges, NAT and routes |
 | `./tn dns list\|sync` | One name per host in every region: `<host>.<region>.<suffix>` |
+| `./tn phone add\|remove\|list <name>` | Phones: with `entry_port` set, a region's control host also runs a WireGuard entry (its own nft table). A phone's proxy app gets one WireGuard node per region; tn makes the phone's key here and writes WireGuard and Clash (Stash, mihomo) files |
 
 Start with `examples/site.example.toml` or `./tn init`. Licensed under MIT.

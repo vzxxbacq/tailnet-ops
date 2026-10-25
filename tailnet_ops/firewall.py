@@ -1,12 +1,13 @@
-"""Find the firewall chains that would drop a line's forwarded traffic, and the
-narrow accept rules that let it through.
+"""Find the firewall chains that would drop tailnet-ops's traffic, and the narrow
+accept rules that let it through.
 
 Any host can carry its own firewall: an nftables table with `policy drop` on the
-forward hook, Docker's or ufw's `FORWARD DROP` (iptables-nft), or legacy iptables.
-A packet is forwarded only if every forward base chain accepts it, so tailnet-ops
-inserts, at the top of each chain that could drop, two rules that accept traffic
-between the tunnel and tailscale0, tagged with a comment. Nothing else in those
-chains changes, and rollback deletes exactly the tagged rules.
+forward or input hook, Docker's or ufw's `FORWARD DROP` (iptables-nft), or legacy
+iptables. A packet passes only if every base chain on its hook accepts it, so
+tailnet-ops inserts, at the top of each chain that could drop, a few rules that
+accept only its own traffic (for a line: between the tunnel and tailscale0), tagged
+with a comment. Nothing else in those chains changes, and rollback deletes exactly
+the tagged rules.
 """
 
 import json
@@ -44,8 +45,9 @@ def _iptables_nft(family, table, chain):
     return family in ("ip", "ip6") and table == "filter" and chain.isupper()
 
 
-def blocking_targets(nft_json, legacy_forward="", own_tables=()):
-    """Chains on the IPv4 forward path that drop by policy or by rule."""
+def blocking_targets(nft_json, legacy="", own_tables=(), hook="forward"):
+    """Chains on the IPv4 path of hook (forward or input) that drop by policy or by rule.
+    legacy is `iptables-legacy -S <HOOK>`."""
     try:
         items = json.loads(nft_json).get("nftables", []) if nft_json.strip() else []
     except ValueError:
@@ -54,7 +56,7 @@ def blocking_targets(nft_json, legacy_forward="", own_tables=()):
     for item in items:
         if "chain" in item:
             c = item["chain"]
-            if c.get("hook") == "forward" and c.get("family") in ("ip", "inet"):
+            if c.get("hook") == hook and c.get("family") in ("ip", "inet"):
                 chains[(c["family"], c["table"], c["name"])] = c
         elif "rule" in item:
             r = item["rule"]
@@ -72,29 +74,39 @@ def blocking_targets(nft_json, legacy_forward="", own_tables=()):
         if reasons:
             kind = "iptables" if _iptables_nft(family, table, name) else "nft"
             out.append(Target(kind, family, table, name, " and ".join(reasons)))
-    lines = legacy_forward.splitlines()
-    if lines and (lines[0].strip() == "-P FORWARD DROP" or any(re.search(r"-j (DROP|REJECT)\b", ln) for ln in lines)):
-        out.append(Target("iptables-legacy", "ip", "filter", "FORWARD",
-                          "policy DROP" if lines[0].strip() == "-P FORWARD DROP" else "DROP rules"))
+    lines, chain = legacy.splitlines(), hook.upper()
+    if lines and (lines[0].strip() == f"-P {chain} DROP" or any(re.search(r"-j (DROP|REJECT)\b", ln) for ln in lines)):
+        out.append(Target("iptables-legacy", "ip", "filter", chain,
+                          "policy DROP" if lines[0].strip() == f"-P {chain} DROP" else "DROP rules"))
     return out
 
 
 def allow_script(line_name, iface, targets, mark=None):
-    """A self-contained script: `add` (idempotent), `del`, `check`, and `dry` (each insert checked by
-    `nft -c`, nothing applied). Run by wg-quick and a timer. `mark` becomes the second line, which tells
-    rollback the file is ours."""
+    """The accept rules of a line: traffic between its tunnel and tailscale0, both ways."""
     comment = f"tailnet-ops line={line_name}"
     pairs = [(iface, TAILSCALE), (TAILSCALE, iface)]
+    matches = [(f'iifname "{i}" oifname "{o}"', f"-i {i} -o {o}") for i, o in pairs]
+    about = [f"# {comment}: accept forwarded traffic between {iface} and {TAILSCALE} in the chains below,",
+             "# which would otherwise drop it. Run by wg-quick (PostUp add, PostDown del) and by a timer",
+             "# that puts the rules back if another tool reloads its firewall."]
+    return accept_script(comment, [(t, matches) for t in targets], about, mark)
+
+
+def accept_script(comment, chains, about, mark=None):
+    """A self-contained script: `add` (idempotent), `del`, `check`, and `dry` (each insert checked by
+    `nft -c`, nothing applied). chains: [(Target, [(nft match, iptables match)])], one accept rule per
+    match, tagged with comment. about: comment lines saying what the rules are for. `mark` becomes the
+    second line, which tells rollback the file is ours."""
     add, delete, check, dry = [], [], [], []
-    for t in targets:
+    for t, matches in chains:
         if t.kind == "nft":
             where = f"{t.family} {shlex.quote(t.table)} {shlex.quote(t.chain)}"
             check.append(f"nft list chain {where} 2>/dev/null | grep -qF {shlex.quote(comment)}")
             add.append(f"if nft list chain {where} >/dev/null 2>&1 && ! nft list chain {where} | grep -qF "
                        f"{shlex.quote(comment)}; then")
-            for i, o in pairs:
+            for match, _spec in matches:
                 # One argument, so the double quotes around names and the comment reach nft.
-                rule = f'insert rule {t.family} {t.table} {t.chain} iifname "{i}" oifname "{o}" counter accept comment "{comment}"'
+                rule = f'insert rule {t.family} {t.table} {t.chain} {match} counter accept comment "{comment}"'
                 add.append(f"  nft {shlex.quote(rule)}")
                 dry.append(f"nft -c {shlex.quote(rule)}")
             add.append("fi")
@@ -104,8 +116,8 @@ def allow_script(line_name, iface, targets, mark=None):
             delete.append("done")
         else:
             cmd = "iptables-legacy" if t.kind == "iptables-legacy" else "iptables"
-            for i, o in pairs:
-                spec = f'-i {i} -o {o} -m comment --comment {shlex.quote(comment)} -j ACCEPT'
+            for _match, match_spec in matches:
+                spec = f'{match_spec} -m comment --comment {shlex.quote(comment)} -j ACCEPT'
                 check.append(f"{cmd} -C {t.chain} {spec} 2>/dev/null")
                 add.append(f"{cmd} -C {t.chain} {spec} 2>/dev/null || {cmd} -I {t.chain} 1 {spec}")
                 delete.append(f"while {cmd} -D {t.chain} {spec} 2>/dev/null; do :; done")
@@ -113,10 +125,8 @@ def allow_script(line_name, iface, targets, mark=None):
     body = [
         "#!/bin/sh",
         *([f"# {mark}"] if mark else []),
-        f"# {comment}: accept forwarded traffic between {iface} and {TAILSCALE} in the chains below,",
-        "# which would otherwise drop it. Run by wg-quick (PostUp add, PostDown del) and by a timer",
-        "# that puts the rules back if another tool reloads its firewall.",
-        *[f"#   {t.label()}: {t.reason}" for t in targets],
+        *about,
+        *[f"#   {t.label()}: {t.reason}" for t, _matches in chains],
         "case \"$1\" in",
         "add)",
         *[f"  {x}" for x in (add or [":"])],

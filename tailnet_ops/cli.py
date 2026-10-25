@@ -75,7 +75,8 @@ def cmd_site_check(args):
     print(redact(f"{directory / sitemod.SITE_FILE}: ok"))
     for r in site.regions.values():
         print(redact(f"  region {r.name}: {r.control_host} -> {r.server_url}, prefix {r.ipv4_prefix}, "
-                     f"DERP {r.derp_region_id}, checked from {r.check_from}"))
+                     f"DERP {r.derp_region_id}, checked from {r.check_from}"
+                     + (f", phone entry udp {r.entry_port}" if r.entry_port else "")))
     for ln in site.lines:
         print(redact(f"  line {ln.name}: {ln.initiator} -> {ln.responder} ({ln.responder_entry_ipv4})"
                      f"{', one-way' if ln.one_way else ''}"))
@@ -423,6 +424,38 @@ def run_job(job, console, args, action):
     return 2
 
 
+def cmd_phone(args):
+    from .phone import Phones
+    site = load_site(args)
+    redact = redactor(site) if args.redact else identity
+    if args.action == "list":
+        phones = Phones(site, None)
+        if not site.phones:
+            print("No phones yet. Add one with: tn phone add <name>")
+            return 0
+        rows = [tuple(redact(c) for c in r) for r in phones.rows()]
+        widths = [max(len(r[i]) for r in rows) for i in range(3)]
+        for r in rows:
+            print("  " + "  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
+        print(redact(f"\nFiles are in {site.phones_dir}/<phone>/."))
+        return 0
+    console = Console(redact, run_log(site, f"phone-{args.action}", getattr(args, "name", None)))
+    phones = Phones(site, remote.SSHRunner(out=console.out, log=console.log), out=console.out)
+    try:
+        if args.action == "add":
+            return phones.add(args.name, yes=args.yes)
+        if args.action == "stop":
+            return phones.stop(args.name, yes=args.yes)
+        if args.action == "status":
+            return phones.status()
+        return phones.remove(args.name, yes=args.yes)
+    except (StepError, sitemod.SiteError, remote.RemoteError, OSError, ValueError) as e:
+        console.out(f"FAILED: {e}")
+        return 1
+    finally:
+        console.close()
+
+
 def cmd_status(args):
     dep, console = _deployment(args, "status")
     try:
@@ -529,7 +562,7 @@ def build_parser():
     s = p.add_subparsers(dest="action", required=True)
     for action, help_text in (
         ("plan", "print every step with its exact remote script and rollback; changes nothing"),
-        ("preflight", "run step 1 only (read-only)"),
+        ("preflight", "run step 1, and the phone entry's checks, only (read-only)"),
         ("apply", "run the steps; asks for yes"),
         ("verify", "check /health, DERP and STUN from the checker host (read-only)"),
         ("rollback", "undo the steps in reverse; asks for yes"),
@@ -604,6 +637,35 @@ def build_parser():
     c.add_argument("region")
     c.add_argument("--yes", action="store_true", help="do not ask")
     c.set_defaults(func=cmd_dns)
+
+    p = sub.add_parser(
+        "phone", help="phones: WireGuard nodes for the phone's proxy app, through each region's entry",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="A phone runs one VPN at a time (its proxy app), so it reaches the tailnets through the\n"
+                    "regions' phone entries (entry_port in site.toml, installed by tn control apply).\n\n"
+                    "  tn phone add <name>      make its key here, add it to every entry, write its files\n"
+                    "                           (again: refresh its peers, names and files)\n"
+                    "  tn phone remove <name>   take it off every entry and delete its files\n"
+                    "  tn phone list            the phones added so far\n"
+                    "  tn phone status          each entry, its DNS and every phone's last handshake (read-only)\n"
+                    "  tn phone stop <region>   remove only that region's entry (tn control apply puts it back)")
+    s = p.add_subparsers(dest="action", required=True)
+    c = s.add_parser("list", parents=[common], help="the phones added so far (reads the site directory only)")
+    c.set_defaults(func=cmd_phone)
+    c = s.add_parser("status", parents=[common],
+                     help="each entry, its DNS and every phone's last handshake (read-only over SSH)")
+    c.set_defaults(func=cmd_phone)
+    for action, help_text in (("add", "add a phone to every entry and write its files; asks for yes"),
+                              ("remove", "take a phone off every entry and delete its files; asks for yes")):
+        c = s.add_parser(action, parents=[common], help=help_text)
+        c.add_argument("name", help="the phone's name, e.g. iphone")
+        c.add_argument("--yes", action="store_true", help="do not ask")
+        c.set_defaults(func=cmd_phone)
+    c = s.add_parser("stop", parents=[common],
+                     help="remove the phone entry from one region's control host; asks for yes")
+    c.add_argument("name", metavar="region")
+    c.add_argument("--yes", action="store_true", help="do not ask")
+    c.set_defaults(func=cmd_phone)
 
     p = sub.add_parser("status", parents=[common], help="list the nodes of a region (read-only)")
     p.add_argument("region")

@@ -1,6 +1,6 @@
 """`tn control`: deploy Headscale for one region, step by step."""
 
-from . import VERSION, names, pins, pki, render, scripts
+from . import VERSION, entry, names, pins, pki, render, scripts
 from .procedure import Action, Procedure, Step, StepError, fetch_pinned
 from .site import ensure_private_dir, write_private
 
@@ -60,6 +60,7 @@ class Deployment(Procedure):
         self.checker_prelude = scripts.checker_prelude(self.region)
         self.facts = {}
         self.names = names.Names(site, runner, out, ssh_view=ssh_view)
+        self.entry_found = None  # the firewall chains that would drop phone traffic, from the entry's checks
 
     # --- running ------------------------------------------------------------
 
@@ -126,6 +127,26 @@ class Deployment(Procedure):
 
     def _peer_controls(self):
         return sorted({other.control_host for _ln, other in render.line_peers(self.site, self.region)})
+
+    def _entry_check(self):
+        result = self._control(entry.check(self.site, self.region))
+        self.entry_found = entry.targets(result)
+        for hook, found in self.entry_found.items():
+            for t in found:
+                self.out(f"    firewall: {t.label()} could drop phone traffic ({hook}, {t.reason}); "
+                         "the entry adds tagged accept rules there")
+        if not any(self.entry_found.values()):
+            self.out("    firewall: nothing would drop phone traffic")
+        return result
+
+    def _run_entry(self):
+        result = self._entry_check()
+        pub = self._control(self.entry_body(self.entry_found, result.facts().get("forward", "1"))).facts().get("pub")
+        if pub:
+            self.out(f"    entry public key {pub}; add a phone with: tn phone add <name>")
+
+    def entry_body(self, found=None, forward="1"):
+        return entry.start(self.site, self.region, found or {}, forward)
 
     def _run_verify(self):
         ca = self.ops.ca_pem()
@@ -240,6 +261,7 @@ class Deployment(Procedure):
                       + (f"; swaps names with {', '.join(self._peer_controls())}" if self._peer_controls() else ""),
                 undo_brief="remove it; the others drop these names",
             ),
+            *([self._entry_step()] if r.entry_port else []),
             Step(
                 9, "Verify",
                 [f"From {checker}: /health over TLS trusting only the site CA, the DERP probe and",
@@ -253,6 +275,30 @@ class Deployment(Procedure):
             step.number = number
             step.host = checker if step.title == "Verify" else host
         return steps
+
+    def _entry_step(self):
+        site, r = self.site, self.region
+        across = ", ".join(f"{o.name} {o.ipv4_prefix} (as {o.alias_net})" for o in entry.reached(site, r))
+        return Step(
+            0, "Phone entry",
+            [f"WireGuard for phones' proxy apps: {entry.IFACE} {site.entry_address}/{site.entry_net.prefixlen} on "
+             f"udp/{r.entry_port}, with a key made on the host.",
+             f"Phones reach {r.ipv4_prefix}" + (f" and, through the line, {across}" if across else "")
+             + " and nothing else;",
+             f"they are masqueraded (nft table {entry.TABLE}). Firewall chains that would drop this traffic get",
+             "tagged accept rules, kept by a timer: the checks find those chains and the accept-rules script",
+             f"lists them (shown here without any). Peers: the phones in phones.json ({len(site.phones)} now; "
+             "tn phone add)."],
+            [Action(r.control_host, "read-only checks: tools, files, port, range; read the firewall",
+                    entry.check(site, r), "control", True),
+             Action(r.control_host, "key, nft table, accept rules, conf and timer; start; set the peers",
+                    self.entry_body(), "control", True)],
+            rollback=entry.rollback(site, r),
+            rollback_note=f"stop {entry.IFACE}; remove its key, nft table, accept rules, timer and files",
+            run=self._run_entry,
+            brief=f"Phone entry: WireGuard udp/{r.entry_port}, nft table {entry.TABLE}",
+            undo_brief="stop it and remove all of it",
+        )
 
     def header(self):
         r, site = self.region, self.site
@@ -274,6 +320,10 @@ class Deployment(Procedure):
             f"                {names.KEEPER_UNIT}.timer (names every {names.KEEPER_MINUTES} minute(s))",
             *([f"  names         swapped with {', '.join(self._peer_controls())} over SSH, by a key that can only "
                "swap names"] if self._peer_controls() else []),
+            *([f"  phone entry   udp {r.listen_ipv4}:{r.entry_port}, WireGuard {entry.IFACE} {site.entry_address}"
+               f"/{site.entry_net.prefixlen}, nft table {entry.TABLE}, {len(site.phones)} phone(s);",
+               "                tagged accept rules where a firewall chain would drop phone traffic"]
+              if r.entry_port else []),
             "  leaves alone  every other file, user, service, port and firewall rule",
         ])
 
@@ -298,7 +348,12 @@ class Deployment(Procedure):
         self._control(step.rollback)
 
     def preflight(self):
-        return self.run_once(self._run_preflight)
+        def checks():
+            self._run_preflight()
+            if self.region.entry_port:
+                self.out(f"  phone entry (step {next(s.number for s in self.steps() if s.title == 'Phone entry')}):")
+                self._entry_check()
+        return self.run_once(checks)
 
     def verify(self):
         return self.run_once(self._run_verify)

@@ -6,6 +6,7 @@
 name = "example"
 owner_user = "owner"               # Headscale user that owns the tags and personal devices
 dns_suffix = "tailnet.internal"    # every host is <name>.<suffix> in every region; short names work too
+# entry_ipv4 = "10.255.254.0/24"  # phones' addresses on the phone entries (this is the default)
 
 [regions.cn]                       # one tailnet per region
 control_host = "cn-control"        # SSH alias of the machine that runs Headscale
@@ -14,6 +15,7 @@ public_ipv4 = "198.51.100.10"      # how clients reach the control plane
 listen_ipv4 = "0.0.0.0"            # address Headscale binds; a specific IP on multi-address hosts
 port = 9443
 stun_port = 3478
+# entry_port = 51820              # optional: a WireGuard entry for phones on this UDP port (tn phone)
 ipv4_prefix = "100.64.1.0/24"      # one /24 per tailnet, inside 100.64.0.0/10; it appears across a line as 10.255.1.0/24
 avoid_prefixes = []                # e.g. provider DNS inside 100.64.0.0/10
 derp_region_id = 901

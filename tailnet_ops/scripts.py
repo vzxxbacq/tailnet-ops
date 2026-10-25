@@ -39,6 +39,7 @@ def control_prelude(site, region):
     r = region
     host = site.host_settings.get(r.control_host)
     tailscale_port = host.tailscale_port if host and host.tailscale_port else ""
+    entry_port = r.entry_port or ""
     return f"""set -euo pipefail
 umask 022
 {_vars([
@@ -51,6 +52,7 @@ umask 022
     ("METRICS_PORT", r.metrics_port),
     ("GRPC_PORT", r.grpc_port),
     ("TAILSCALE_PORT", tailscale_port),
+    ("ENTRY_PORT", entry_port),
     ("OFFICIAL_DERP", "yes" if r.official_derp else "no"),
     ("OWNER", site.owner_user),
     ("BIN", render.BIN),
@@ -144,6 +146,15 @@ check_port udp "$STUN_PORT" "STUN"
 check_port tcp "$METRICS_PORT" "metrics on 127.0.0.1"
 check_port tcp "$GRPC_PORT" "gRPC on 127.0.0.1"
 if [ -n "$TAILSCALE_PORT" ]; then check_port udp "$TAILSCALE_PORT" "reserved for Tailscale" tailscaled; fi
+if [ -n "$ENTRY_PORT" ]; then
+  lines=$(ss -H -lun "sport = :$ENTRY_PORT" 2>/dev/null || true)
+  if [ -z "$lines" ]; then pass "udp/$ENTRY_PORT free (WireGuard entry for phones)"
+  elif [ "$(wg show tn-entry listen-port 2>/dev/null)" = "$ENTRY_PORT" ]; then pass "udp/$ENTRY_PORT already used by tn-entry (WireGuard entry for phones)"
+  else flag "udp/$ENTRY_PORT is in use (WireGuard entry for phones): $(printf '%s' "$lines" | tr -s ' ' | tr '\n' ' ' | cut -c1-160)"; fi
+  missing=""
+  for c in wg wg-quick nft; do command -v "$c" >/dev/null || missing="$missing $c"; done
+  if [ -n "$missing" ]; then flag "missing for the phone entry:$missing (Debian and Ubuntu: apt install wireguard-tools nftables)"; fi
+fi
 
 if [ ! -e "$ETC" ]; then pass "$ETC absent"
 elif ours_etc; then pass "$ETC exists and is ours"

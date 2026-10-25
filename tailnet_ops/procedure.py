@@ -111,12 +111,13 @@ class Procedure:
         """The short plan: what changes, step by step, and how each step is undone."""
         steps = self.steps()
         width = max(len(self._brief(s)) for s in steps)
+        digits = len(str(max(s.number for s in steps)))
         out = [f"tn {self.command} plan {self.subject} · plan id {self.plan_id()}", "",
                self.summary_header(checks), "",
-               f"     {'Step'.ljust(width)}  Undo"]
+               f"    {' ' * digits}{'Step'.ljust(width)}  Undo"]
         for s in steps:
             undo = s.undo_brief or ("—" if not s.rollback and s.read_only else s.rollback_note)
-            out.append(f"  {s.number}  {self._brief(s).ljust(width)}  {undo}")
+            out.append(f"  {str(s.number).rjust(digits)}  {self._brief(s).ljust(width)}  {undo}")
         out += ["", f"Undo everything: tn {self.command} rollback {self.subject}",
                 f"Exact scripts and rollbacks: tn {self.command} plan {self.subject} --full"]
         return "\n".join(out) + "\n"
