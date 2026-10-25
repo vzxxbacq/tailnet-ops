@@ -125,15 +125,10 @@ def policy(site, region, skip_lines=()):
     region's alias range. The region's tags are owned by the owner, for tagged join keys."""
     owner = f"{site.owner_user}@"
     tags = list(region.tags)
-    admins = [t for t in tags if t.endswith("-admin")]
-    doc = {"tagOwners": {tag: [owner] for tag in tags}}
-    if admins:
-        # An admin host reaches every host; no host may start a connection to it (replies still flow).
-        others = [t for t in tags if t not in admins] + [owner]
-        doc["grants"] = [{"src": ["*"], "dst": others, "ip": ["*"]},
-                         {"src": admins, "dst": ["*"], "ip": ["*"]}]
-    else:
-        doc["grants"] = [{"src": ["*"], "dst": ["*"], "ip": ["*"]}]
+    doc = {
+        "tagOwners": {tag: [owner] for tag in tags},
+        "grants": [{"src": ["*"], "dst": ["*"], "ip": ["*"]}],
+    }
     for _ln, other in line_peers(site, region, skip_lines):
         if other.alias_net is not None:
             doc["grants"].append({"src": ["*"], "dst": [str(other.alias_net)], "ip": ["*"]})

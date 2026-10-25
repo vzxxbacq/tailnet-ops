@@ -151,7 +151,6 @@ class HostSettings:
     region: str = None           # needed only for hosts that are no region's control or checker host
     accept_dns: bool = None      # default: on where systemd-resolved runs (only <suffix> goes to MagicDNS)
     local: bool = None           # the machine that runs tn: its scripts run here with sudo, not over SSH
-    role: str = None             # "server" (default) or "admin": reaches every host, and no host may start a connection to it
     tags: list = None            # default: see Site.host_tags
 
 
@@ -210,8 +209,6 @@ class Site:
         if h and h.tags:
             return list(h.tags)
         region = self.host_region(alias)
-        if h and h.role == "admin":
-            return [t for t in region.tags if t.endswith("-admin")]
         suffixes = {"-server"}
         suffixes |= {"-gateway" for ln in self.lines if ln.initiator == alias}
         suffixes |= {"-border" for ln in self.lines if ln.responder == alias}
@@ -314,8 +311,7 @@ REGION_KEYS = {
 }
 REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int, "alias_ipv4": str, "base_domain": str}
 HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str, "region": str, "tags": list, "accept_dns": bool,
-             "local": bool, "role": str}
-ROLES = ("server", "admin")
+             "local": bool}
 NETFILTER_MODES = ("on", "nodivert", "off")
 LINE_OPTIONAL = {"port": int, "tunnel_ipv4": str}
 LINE_KEYS = {
@@ -556,9 +552,6 @@ def parse(data, known_host=None, directory=None):
             for tag in tags:
                 if not isinstance(tag, str) or tag not in allowed:
                     problems.append(f"{where}.tags: {tag!r} is not a tag of the host's region")
-        role = h.get("role")
-        if role is not None and role not in ROLES:
-            problems.append(f"{where}.role: use one of {', '.join(ROLES)}")
         host_settings[alias] = HostSettings(name=alias, **h)
 
     def region_of(alias):
@@ -572,16 +565,6 @@ def parse(data, known_host=None, directory=None):
     locals_ = [a for a, h in host_settings.items() if h.local]
     if len(locals_) > 1:
         problems.append(f"hosts {', '.join(locals_)}: only one host can be local (the machine that runs tn)")
-    for alias, h in host_settings.items():
-        if h.role != "admin":
-            continue
-        home = region_of(alias)
-        if home is None:
-            problems.append(f"hosts.{alias}: an admin host needs a region")
-        elif not any(t.endswith("-admin") for t in regions[home].tags):
-            problems.append(f"hosts.{alias}: add a tag like tag:{home}-admin to regions.{home}.tags for the admin role")
-        if any(alias in (ln.initiator, ln.responder) for ln in lines):
-            problems.append(f"hosts.{alias}: an admin host cannot be a line's border, which others must reach")
     taken = [(f"regions.{n}.ipv4_prefix", ipaddress.IPv4Network(r.ipv4_prefix)) for n, r in regions.items()
              if _net("", r.ipv4_prefix, [])]
     taken += [(f"lines.{ln.name}.tunnel_ipv4", ipaddress.IPv4Network(ln.tunnel_ipv4)) for ln in lines
