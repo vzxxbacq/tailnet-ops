@@ -31,6 +31,10 @@ class Console:
         print(self.redact(str(text)), flush=True)
         self.log(text)
 
+    def show(self, text):
+        """Print without logging; for text whose full form is already in the log."""
+        print(self.redact(str(text)), flush=True)
+
     def log(self, text):
         if self.log_file:
             self.log_file.write(f"{text}\n")
@@ -87,14 +91,20 @@ def _deployment(args, kind):
     return Deployment(site, args.region, runner=runner, out=console.out), console
 
 
+def show_plan(procedure, console, full):
+    """Print the short plan (or the full one with --full); the log always gets the full plan."""
+    text, _digest = procedure.plan_text()
+    console.log(text)
+    console.show(text if full else procedure.summary_text())
+    console.out(f"Full plan saved to {console.log_path}. Nothing was changed.")
+    return 0
+
+
 def cmd_control(args):
     dep, console = _deployment(args, args.action)
     try:
         if args.action == "plan":
-            text, _digest = dep.plan_text()
-            console.out(text)
-            console.out(f"Saved to {console.log_path}. Nothing was changed.")
-            return 0
+            return show_plan(dep, console, args.full)
         if args.action == "apply":
             return dep.apply(yes=args.yes)
         if args.action == "rollback":
@@ -115,10 +125,7 @@ def cmd_join(args):
     try:
         job = Join(site, args.host, runner=runner, out=console.out)
         if args.action == "plan":
-            text, _digest = job.plan_text()
-            console.out(text)
-            console.out(f"Saved to {console.log_path}. Nothing was changed.")
-            return 0
+            return show_plan(job, console, args.full)
         if args.action == "apply":
             return job.apply(yes=args.yes)
         if args.action == "rollback":
@@ -245,6 +252,8 @@ def build_parser():
     ):
         c = s.add_parser(action, parents=[common], help=help_text)
         c.add_argument("region")
+        if action == "plan":
+            c.add_argument("--full", action="store_true", help="print every remote script and rollback")
         if action in ("apply", "rollback"):
             c.add_argument("--yes", action="store_true", help="do not ask")
         c.set_defaults(func=cmd_control)
@@ -260,6 +269,8 @@ def build_parser():
     ):
         c = s.add_parser(action, parents=[common], help=help_text)
         c.add_argument("host", help="SSH alias")
+        if action == "plan":
+            c.add_argument("--full", action="store_true", help="print every remote script and rollback")
         if action in ("apply", "rollback"):
             c.add_argument("--yes", action="store_true", help="do not ask")
         c.set_defaults(func=cmd_join)

@@ -61,7 +61,7 @@ The first site is the owner's. Its configuration and notes are in the owner's si
 | `tn client mac/phone` | 3 | Sets up Mac clients and phone entries. |
 | `tn doctor` | 3 | Checks isolation (no cross-region peers), paths and DERP use. |
 
-Every command plans by default and changes nothing. `apply` asks for `yes` unless given `--yes`. Each plan step shows what it does, the exact remote script and its rollback.
+Every command plans by default and changes nothing. `apply` asks for `yes` unless given `--yes`. A plan prints, per step, what it does and how it is undone; `--full` and the plan log in `runs/` add the exact remote script and rollback of every step.
 
 ## Milestone 1: control planes
 

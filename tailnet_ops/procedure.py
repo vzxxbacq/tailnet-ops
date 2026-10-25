@@ -39,6 +39,8 @@ class Step:
     host: str = None            # where the step runs, for progress lines
     rollback_host: str = None   # where its rollback runs; defaults to host
     undo: object = field(default=None, repr=False)  # runs the rollback; None = rollback script on rollback_host
+    brief: str = ""             # one line for the short plan
+    undo_brief: str = ""        # how it is undone, in a few words
 
 
 def indent(text, pad="      "):
@@ -102,6 +104,24 @@ class Procedure:
     def plan_id(self):
         return self.plan_text()[1]
 
+    def summary_text(self):
+        """The short plan: what changes, step by step, and how each step is undone."""
+        steps = self.steps()
+        width = max(len(self._brief(s)) for s in steps)
+        out = [f"tn {self.command} plan {self.subject} · plan id {self.plan_id()}", "", self.header(), "",
+               f"     {'Step'.ljust(width)}  Undo"]
+        for s in steps:
+            undo = s.undo_brief or ("—" if not s.rollback and s.read_only else s.rollback_note)
+            out.append(f"  {s.number}  {self._brief(s).ljust(width)}  {undo}")
+        out += ["", f"Undo everything: tn {self.command} rollback {self.subject}",
+                f"Exact scripts and rollbacks: tn {self.command} plan {self.subject} --full"]
+        return "\n".join(out) + "\n"
+
+    @staticmethod
+    def _brief(step):
+        brief = step.brief or step.title
+        return f"{brief} (read-only)" if step.read_only else brief
+
     def _plan_body(self):
         steps = self.steps()
         out = [self.header(), "", self.plan_intro(), ""]
@@ -143,10 +163,8 @@ class Procedure:
 
     def apply(self, yes=False, ask=input):
         steps = self.steps()
-        self.out(self.header())
-        self.out(f"\nPlan id {self.plan_id()} (compare with the plan you approved)")
-        for s in steps:
-            self.out(f"  {s.number}. {s.title}{' (read-only)' if s.read_only else ''}")
+        self.out(self.summary_text().rstrip("\n").rsplit("\n\n", 1)[0])
+        self.out("\nCompare the plan id with the plan you approved.")
         if not yes:
             answer = ask(f"Type yes to apply these steps to {self.target}: ")
             if answer.strip() != "yes":

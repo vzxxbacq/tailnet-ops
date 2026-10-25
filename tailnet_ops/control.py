@@ -135,6 +135,7 @@ class Deployment(Procedure):
                  "that nothing named headscale exists unless tailnet-ops made it. Changes nothing."],
                 [Action(host, "read-only checks", scripts.PREFLIGHT, "control", True)],
                 rollback_note="none needed (read-only)", read_only=True, run=self._run_preflight,
+                brief="Check the host",
             ),
             Step(
                 2, "Binary",
@@ -149,7 +150,7 @@ class Deployment(Procedure):
                     Action(host, "verify and install; $1 is the staging directory", scripts.INSTALL_BINARY, "control", True),
                 ],
                 rollback=scripts.ROLLBACK_BINARY, rollback_note=f"remove {render.BIN} if it is the pinned build",
-                run=self._run_binary,
+                run=self._run_binary, brief=f"Install Headscale {pins.HEADSCALE_VERSION}", undo_brief="remove the binary",
             ),
             Step(
                 3, "User and directories",
@@ -158,7 +159,8 @@ class Deployment(Procedure):
                 [Action(host, "create", scripts.USER_AND_DIRS, "control", True)],
                 rollback=scripts.ROLLBACK_USER_AND_DIRS,
                 rollback_note=f"remove {render.ETC} and {render.LIB} (with the database) and the user, if ours",
-                run=self._run_user_and_dirs,
+                run=self._run_user_and_dirs, brief="Create user headscale and its directories",
+                undo_brief="remove them, the database and the user",
             ),
             Step(
                 4, "Certificate",
@@ -173,7 +175,8 @@ class Deployment(Procedure):
                 ],
                 rollback=scripts.ROLLBACK_CERT,
                 rollback_note="remove the server key and certificates on the host; the site CA here stays",
-                run=self._run_cert,
+                run=self._run_cert, brief=f"Server key on the host, certificate for {sans}",
+                undo_brief="remove the key and certificates",
             ),
             Step(
                 5, "Configuration",
@@ -181,7 +184,8 @@ class Deployment(Procedure):
                  f"and {render.UNIT}; run headscale configtest as the headscale user."],
                 [Action(host, "write files and test", self.configuration_body(), "control", True)],
                 rollback=scripts.ROLLBACK_CONFIGURATION, rollback_note="remove the unit, config.yaml and the policy",
-                run=self._run_config,
+                run=self._run_config, brief="Write config, policy {} and unit; configtest",
+                undo_brief="remove the unit, config and policy",
             ),
             Step(
                 6, "Start",
@@ -189,7 +193,7 @@ class Deployment(Procedure):
                  f"wait for /health over TLS on {r.local_ipv4}:{r.port}."],
                 [Action(host, "start", scripts.START, "control", True)],
                 rollback=scripts.ROLLBACK_START, rollback_note="stop and disable the unit",
-                run=self._run_start,
+                run=self._run_start, brief="Start headscale, wait for /health", undo_brief="stop and disable it",
             ),
             Step(
                 7, "Real policy",
@@ -199,7 +203,8 @@ class Deployment(Procedure):
                 [Action(host, "policy", scripts.real_policy(render.policy(self.site, r)), "control", True)],
                 rollback_note=f"nothing separate: the user lives in {render.LIB} and the policy in {render.ETC}; "
                               "step 3's rollback removes both",
-                run=self._run_policy,
+                run=self._run_policy, brief=f"Create user {self.site.owner_user}, load the real policy",
+                undo_brief="removed with step 3",
             ),
             Step(
                 8, "Verify",
@@ -207,6 +212,7 @@ class Deployment(Procedure):
                  "a STUN binding request. Read-only."],
                 [Action(checker, "checks as the login user", scripts.verify(CA_PLACEHOLDER), "checker", False)],
                 rollback_note="none needed (read-only)", read_only=True, run=self._run_verify,
+                brief=f"Check TLS, DERP and STUN from {checker}",
             ),
         ]
         for step in steps:

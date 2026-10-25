@@ -45,14 +45,30 @@ class CliTest(TempDirTest):
     def test_plan_logs_privately_and_changes_nothing(self):
         rc, out, err = run_cli("control", "plan", "ovs", "--site", str(self.site))
         self.assertEqual(rc, 0, err)
-        self.assertIn("Step 8/8  Verify", out)
+        self.assertIn("  8  Check TLS, DERP and STUN from ovs-probe (read-only)", out)
+        self.assertIn("  2  Install Headscale 0.29.6", out)
+        self.assertIn("remove the binary", out)
+        self.assertNotIn("Step 8/8", out)
+        self.assertNotIn("set -euo pipefail", out)
         runs = self.site / "runs"
         self.assertEqual(runs.stat().st_mode & 0o777, 0o700)
         logs = list(runs.iterdir())
         self.assertEqual(len(logs), 1)
         self.assertEqual(logs[0].stat().st_mode & 0o777, 0o600)
-        self.assertIn("203.0.113.20", logs[0].read_text())
+        self.assertIn("Step 8/8  Verify", logs[0].read_text())
+        self.assertIn("set -euo pipefail", logs[0].read_text())
         self.assertFalse((self.site / "pki").exists())
+        rc, out, _err = run_cli("control", "plan", "ovs", "--full", "--site", str(self.site))
+        self.assertIn("Step 8/8  Verify", out)
+
+    def test_join_plan(self):
+        rc, out, err = run_cli("join", "plan", "cn-probe", "--site", str(self.site))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("cn-probe joins region cn as cn-probe.cn.tailnet.internal", out)
+        self.assertIn("  5  Join with a one-time tagged key  log out, delete the node on cn-control", out)
+        rc, _out, err = run_cli("join", "plan", "nowhere", "--site", str(self.site))
+        self.assertEqual(rc, 1)
+        self.assertIn("not in any region", err)
 
     def test_plan_redacted(self):
         rc, out, _ = run_cli("control", "plan", "cn", "--redact", "--site", str(self.site))

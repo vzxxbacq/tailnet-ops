@@ -6,7 +6,7 @@ import re
 import shlex
 import tarfile
 
-from . import VERSION, pins, render, scripts
+from . import pins, render, scripts
 from .procedure import Action, Procedure, Step, StepError, fetch_pinned, sha256_file
 from .site import ensure_private_dir, write_private
 
@@ -492,6 +492,7 @@ class Join(Procedure):
                  f"that {a} reaches {r.server_url} over TLS with the site CA. Changes nothing."],
                 [Action(a, "read-only checks", preflight(CA_PLACEHOLDER), "host", True)],
                 rollback_note="none needed (read-only)", read_only=True, run=self._run_preflight,
+                brief="Check the host",
             ),
             Step(
                 2, "Binaries",
@@ -505,7 +506,8 @@ class Join(Procedure):
                     Action(a, "verify and install; $1 is the staging directory", INSTALL_BINARIES, "host", True),
                 ],
                 rollback=ROLLBACK_BINARIES, rollback_note="remove both binaries if they are the pinned build",
-                run=self._run_binaries,
+                run=self._run_binaries, brief=f"Install Tailscale {pins.TAILSCALE_VERSION}",
+                undo_brief="remove both binaries",
             ),
             Step(
                 3, "Site CA",
@@ -514,7 +516,7 @@ class Join(Procedure):
                 [Action(a, "install the CA certificate", install_ca(CA_PLACEHOLDER), "host", True)],
                 rollback=rollback_ca(CA_PLACEHOLDER),
                 rollback_note="remove the CA file if it is this site's and rebuild the trust store",
-                run=self._run_ca,
+                run=self._run_ca, brief="Trust the site CA", undo_brief="remove the CA file",
             ),
             Step(
                 4, "tailscaled",
@@ -523,7 +525,8 @@ class Join(Procedure):
                 [Action(a, "write the unit and start", service(unit(r, a, self.port)), "host", True)],
                 rollback=ROLLBACK_SERVICE,
                 rollback_note=f"stop and disable tailscaled, remove the unit, {TS_STATE} and {TS_CACHE}",
-                run=self._run_service,
+                run=self._run_service, brief=f"Start tailscaled on udp/{self.port}",
+                undo_brief="stop it, remove the unit and state",
             ),
             Step(
                 5, "Join",
@@ -539,7 +542,8 @@ class Join(Procedure):
                 rollback=LOGOUT,
                 rollback_note=f"log out, then delete the node named {dns_label(a)} on {self.control} "
                               "(`headscale nodes list -o json`, then `headscale nodes delete -i <id> --force`)",
-                run=self._run_join, undo=self._undo_join,
+                run=self._run_join, undo=self._undo_join, brief="Join with a one-time tagged key",
+                undo_brief=f"log out, delete the node on {self.control}",
             ),
             Step(
                 6, "Verify",
@@ -551,6 +555,7 @@ class Join(Procedure):
                     Action(self.control, "list nodes", NODES_JSON, "control", True),
                 ],
                 rollback_note="none needed (read-only)", read_only=True, run=self._run_verify,
+                brief="Check the join",
             ),
         ]
         for step in steps:
@@ -561,17 +566,15 @@ class Join(Procedure):
 
     def header(self):
         r, a = self.region, self.alias
-        nf = self.netfilter_mode or "on (Tailscale default: tailscaled adds and removes its own ts-* rules)"
+        nf = self.netfilter_mode or "on (tailscaled adds its own rules)"
         return "\n".join([
-            f"Join {a} to region {r.name} of site {self.site.name!r} · tailnet-ops {VERSION} · Tailscale {pins.TAILSCALE_VERSION}",
-            f"  host          {a}  (scripts run as root over SSH)",
-            f"  login server  {r.server_url}  (Headscale on {self.control})",
-            f"  name          {dns_label(a)}.{r.base_domain}",
-            f"  tags          {', '.join(self.tags)}  (from a single-use {pins.PREAUTH_KEY_EXPIRY} key; no key expiry for tagged nodes)",
-            f"  tailscaled    udp/{self.port}, --no-logs-no-support",
-            f"  tailscale up  --accept-dns=false --accept-routes=false, netfilter {nf}",
-            f"  adds          {TS_BIN}, {TSD_BIN}, {TS_UNIT}, {TS_STATE}/, {ca_file(self.site)}",
-            "  leaves alone  every other file, service, port and firewall rule",
+            f"{a} joins region {r.name} as {dns_label(a)}.{r.base_domain} (Tailscale {pins.TAILSCALE_VERSION})",
+            f"  login server  {r.server_url} (Headscale on {self.control})",
+            f"  tags          {', '.join(self.tags)}",
+            f"  tailscaled    udp/{self.port}, no log upload",
+            f"  options       accept-dns off, accept-routes off, netfilter {nf}",
+            f"  adds          tailscale, tailscaled, tailscaled.service, {TS_STATE}, the site CA",
+            "  leaves alone  everything else",
         ])
 
     def preludes(self):

@@ -21,12 +21,12 @@
 | --- | --- |
 | `./tn init` | 只问名字、专线入口地址和服务商放行的端口，其余通过只读 SSH 得出，写 `site.toml` |
 | `./tn site check` | 校验站点目录（权限、不在 Git 里）和 `site.toml` |
-| `./tn control plan <region>` | 打印每一步、确切的远程脚本和回滚，不改任何东西 |
+| `./tn control plan <region>` | 打印简短计划：每一步做什么、怎么撤销；`--full` 看完整脚本。不改任何东西 |
 | `./tn control preflight <region>` | 只读预检：系统、端口、已有文件 |
 | `./tn control apply <region>` | 按计划部署 Headscale，要输入 `yes` |
 | `./tn control verify <region>` | 从检查机只读验证 TLS `/health`、DERP、STUN |
 | `./tn control rollback <region>` | 倒序回滚，只删 tailnet-ops 自己做的东西，要输入 `yes` |
-| `./tn join plan <host>` | 打印入网的每一步、远程脚本和回滚，不改任何东西 |
+| `./tn join plan <host>` | 打印入网的简短计划；`--full` 看完整脚本。不改任何东西 |
 | `./tn join apply <host>` | 装 Tailscale、信任站点 CA、用一次性带标签密钥加入本区，要输入 `yes` |
 | `./tn join verify <host>` | 只读检查：已连上、地址在本区网段、标签正确、用本区 DERP |
 | `./tn join rollback <host>` | 退出 tailnet 并删掉入网时加的东西，要输入 `yes` |
