@@ -1,6 +1,6 @@
 """`tn control`: deploy Headscale for one region, step by step."""
 
-from . import VERSION, pins, pki, render, scripts
+from . import VERSION, names, pins, pki, render, scripts
 from .procedure import Action, Procedure, Step, StepError, fetch_pinned
 from .site import ensure_private_dir, write_private
 
@@ -48,7 +48,7 @@ class Deployment(Procedure):
     command = "control"
     errors = Procedure.errors + (pki.PKIError,)
 
-    def __init__(self, site, region_name, runner=None, ops=None, out=print):
+    def __init__(self, site, region_name, runner=None, ops=None, out=print, ssh_view=None):
         self.site = site
         self.region = site.region(region_name)
         self.subject = self.region.name
@@ -59,6 +59,7 @@ class Deployment(Procedure):
         self.prelude = scripts.control_prelude(site, self.region)
         self.checker_prelude = scripts.checker_prelude(self.region)
         self.facts = {}
+        self.names = names.Names(site, runner, out, ssh_view=ssh_view)
 
     # --- running ------------------------------------------------------------
 
@@ -111,6 +112,20 @@ class Deployment(Procedure):
 
     def _run_policy(self):
         self._control(scripts.real_policy(render.policy(self.site, self.region)))
+
+    def _run_names(self):
+        self._control(names.install(self.site, self.region))
+        self.names.sync(tolerant=True)
+
+    def _undo_names(self):
+        self._control(self._names_rollback())
+        self.names.sync(tolerant=True, gone=(self.region.name,))
+
+    def _names_rollback(self):
+        return names.uninstall(self.site, self.names.ssh_view(self.region.control_host).get("user", "root"))
+
+    def _peer_controls(self):
+        return sorted({other.control_host for _ln, other in render.line_peers(self.site, self.region)})
 
     def _run_verify(self):
         ca = self.ops.ca_pem()
@@ -207,7 +222,26 @@ class Deployment(Procedure):
                 undo_brief="removed with step 3",
             ),
             Step(
-                8, "Verify",
+                8, "Names",
+                [f"Install a keeper with its own SSH key and a timer: every {names.KEEPER_MINUTES} minute(s) it writes the",
+                 f"names of this region's hosts to {render.EXTRA_RECORDS}, and those of each region it reaches",
+                 "through a line. The control host on a line's initiator side calls the other one over SSH with",
+                 "a key that can only swap the two lists. Then every region's names are updated: each keeper",
+                 "gets its peers, their host keys and their lists; a control host without one gets the records."],
+                [Action(host, "install the keeper, its key and its timer", names.install(self.site, r), "control", True),
+                 *[Action(peer, "pair with this region (peers, host keys, the key that may call, the lists)",
+                          names.KEEPER_VARS + "# names_put $NAMES_DIR/peers/<region>.conf, $NAMES_STATE/<region>.tsv,\n"
+                          "# $NAMES_DIR/known_hosts; names_authorize <SSH user> <restrict,command=... lines>\n",
+                          "control", True) for peer in self._peer_controls()]],
+                rollback=self._names_rollback(),
+                rollback_note="stop and remove the keeper and its keys; the other regions drop this region's names",
+                run=self._run_names, undo=self._undo_names,
+                brief=f"Names keeper, every {names.KEEPER_MINUTES} minute(s)"
+                      + (f"; swaps names with {', '.join(self._peer_controls())}" if self._peer_controls() else ""),
+                undo_brief="remove it; the others drop these names",
+            ),
+            Step(
+                9, "Verify",
                 [f"From {checker}: /health over TLS trusting only the site CA, the DERP probe and",
                  "a STUN binding request. Read-only."],
                 [Action(checker, "checks as the login user", scripts.verify(CA_PLACEHOLDER), "checker", False)],
@@ -215,8 +249,9 @@ class Deployment(Procedure):
                 brief=f"Check TLS, DERP and STUN from {checker}",
             ),
         ]
-        for step in steps:
-            step.host = checker if step.number == 8 else host
+        for number, step in enumerate(steps, 1):
+            step.number = number
+            step.host = checker if step.title == "Verify" else host
         return steps
 
     def header(self):
@@ -235,7 +270,10 @@ class Deployment(Procedure):
             f"  tailnet       {r.ipv4_prefix} · {pins.IPV6_PREFIX}{avoid} · MagicDNS {r.base_domain}",
             f"  DERP          embedded region {r.derp_region_id} {r.derp_region_code!r} ({r.derp_region_name}); official map {official}",
             f"  certificate   SAN {', '.join('IP:' + ip for ip in r.cert_ips)}, signed by the site CA in pki/",
-            f"  adds          {render.BIN}, user headscale, {render.ETC}/, {render.LIB}/, headscale.service",
+            f"  adds          {render.BIN}, user headscale, {render.ETC}/, {render.LIB}/, headscale.service,",
+            f"                {names.KEEPER_UNIT}.timer (names every {names.KEEPER_MINUTES} minute(s))",
+            *([f"  names         swapped with {', '.join(self._peer_controls())} over SSH, by a key that can only "
+               "swap names"] if self._peer_controls() else []),
             "  leaves alone  every other file, user, service, port and firewall rule",
         ])
 

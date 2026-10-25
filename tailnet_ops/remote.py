@@ -187,7 +187,10 @@ def ssh_aliases(path=None):
 
 def ssh_config(host):
     """`ssh -G` for an alias: a dict of lower-case keys. Reads local config only."""
-    p = subprocess.run(["ssh", "-G", host], capture_output=True, text=True)
+    try:
+        p = subprocess.run(["ssh", "-G", host], capture_output=True, text=True)
+    except OSError:
+        return {}
     if p.returncode != 0:
         return {}
     out = {}

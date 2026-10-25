@@ -24,7 +24,7 @@
 | `./tn site check` | 校验站点目录（权限、不在 Git 里）和 `site.toml` |
 | `./tn control plan <region>` | 打印简短计划：每一步做什么、怎么撤销；`--full` 看完整脚本。不改任何东西 |
 | `./tn control preflight <region>` | 只读预检：系统、端口、已有文件 |
-| `./tn control apply <region>` | 按计划部署 Headscale，要输入 `yes` |
+| `./tn control apply <region>` | 按计划部署 Headscale，要输入 `yes`。同时装上名字守护：每分钟更新本区机器的名字，并通过专线两端所在区的控制机互换名单（发起端那台用一把只能交换名单的 SSH 密钥去连另一台），所以任何方式入网、改名、删除，一分钟内各区都能解析 |
 | `./tn control verify <region>` | 从检查机只读验证 TLS `/health`、DERP、STUN |
 | `./tn control rollback <region>` | 倒序回滚，只删 tailnet-ops 自己做的东西，要输入 `yes` |
 | `./tn join` | 交互式入网：用方向键选机器（本机或 SSH 别名）、方案、地区，填名字；先只读检查并显示计划，再问要不要执行 |
@@ -40,7 +40,8 @@
 | `./tn line verify <line>` | 只读：两端互相 ping 隧道地址，再 ping 对方区每台已入网机器的映射地址 |
 | `./tn line rollback <line>` | 撤回路由和策略，停掉隧道，删掉 NAT 表、放行规则、定时器和文件，最后检查有无残留。要输入 `yes` |
 | `./tn dns list` | 只读：列出每个区里每个名字解析到的地址（本区直连地址，或经专线的映射地址） |
-| `./tn dns sync` | 把各区看得到的对方机器名字写进各自的 Headscale，要输入 `yes`；入网和拉专线时会自动做 |
+| `./tn dns sync` | 立即同步各区的名字，要输入 `yes`；装了名字守护的控制机同时更新它的对端、密钥和名单。入网、拉专线和部署控制机时会自动做 |
+| `./tn dns stop <region>` | 只拿掉这个区控制机上的名字守护（定时器、密钥、允许对端连进来的那行），之后名字回到手动同步；`tn control apply` 会再装上 |
 | `./tn status <region>` | 列出节点 |
 | `make check` | 离线测试，加上对工作区和全部历史的隐私检查 |
 
@@ -53,7 +54,7 @@
 | `--name` | 在内网里的名字，默认是 SSH 别名或本机名 |
 | `--port`、`--netfilter`、`--dns` | 服务商只放行部分端口、Linux 防火墙模式、是否用 MagicDNS |
 
-入网密钥默认由 tn 登录控制机生成，直接通过管道交给 `tailscale up`，不显示也不保存。如果运行 tn 的机器登不上控制机，第 5 步会打印一条可以复制的命令：在能登上控制机的机器上运行它，得到一个一次性链接码（30 分钟有效），再粘贴回来（输入不显示）。这时名字同步和验证里需要控制机的部分会跳过，并提示之后在能登上的机器上运行 `tn dns sync`。
+入网密钥默认由 tn 登录控制机生成，直接通过管道交给 `tailscale up`，不显示也不保存。如果运行 tn 的机器登不上控制机，第 5 步会打印一条可以复制的命令：在能登上控制机的机器上运行它，得到一个一次性链接码（30 分钟有效），再粘贴回来（输入不显示）。这时名字同步和验证里需要控制机的部分会跳过；控制机装了名字守护的话，名字一分钟内自动出现，否则之后在能登上的机器上运行 `tn dns sync`。
 
 系统自动识别：Linux 用固定版本的 Tailscale，由 systemd 管理；Alpine 等用 OpenRC 的系统改用 OpenRC 服务（supervise-daemon 守护），先装好 `apk add bash curl ca-certificates iproute2 tar iptables`；Mac 用 Homebrew 的 tailscale 和 launchd，站点 CA 加进系统钥匙串（macOS 会弹窗要密码或 Touch ID）。本机的脚本用 sudo 在本机执行，不走 SSH。
 
@@ -77,7 +78,7 @@ It is Python 3.11+ with the standard library only, and drives your hosts over SS
 | Command | What it does |
 | --- | --- |
 | `./tn init` | Writes `site.toml` from a few answers plus read-only SSH checks |
-| `./tn control plan\|apply\|verify\|rollback <region>` | Deploys Headscale (TLS from the site CA, embedded DERP and STUN) |
+| `./tn control plan\|apply\|verify\|rollback <region>` | Deploys Headscale (TLS from the site CA, embedded DERP and STUN) and a names keeper that refreshes every region's names each minute |
 | `./tn join` | Joins a machine, asking which Tailscale (the command line daemon, or the app), which OS, which machine, and how: a tagged server in one region, or your personal device in every region (one profile each) |
 | `./tn join plan\|apply\|verify\|rollback [host] [options]` | The same without questions; no host means this machine |
 | `./tn join apply <name> --app` | A Mac with the Tailscale app: a configuration profile to install and one block to paste; no SSH to it |

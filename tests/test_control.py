@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tailnet_ops import pins, render, scripts
+from tailnet_ops import names, pins, render, scripts
 from tailnet_ops.control import Deployment, StepError
 from tests.helpers import FakeRunner, TempDirTest, example_text
 
@@ -46,10 +46,10 @@ class PlanTest(TempDirTest):
     def test_plan_prints_every_step_with_rollback(self):
         text, digest = Deployment(self.site, "cn").plan_text()
         for n, title in enumerate(["Preflight", "Binary", "User and directories", "Certificate", "Configuration",
-                                   "Start", "Real policy", "Verify"], 1):
-            self.assertIn(f"Step {n}/8  {title}", text)
-        self.assertEqual(text.count("  Rollback"), 8)
-        self.assertIn("runs the rollbacks of steps 6, 5, 4, 3, 2 in that order", text)
+                                   "Start", "Real policy", "Names", "Verify"], 1):
+            self.assertIn(f"Step {n}/9  {title}", text)
+        self.assertEqual(text.count("  Rollback"), 9)
+        self.assertIn("runs the rollbacks of steps 8, 6, 5, 4, 3, 2 in that order", text)
         self.assertIn(f"Plan id {digest}", text)
         # The exact files and scripts appear verbatim.
         region = self.site.regions["cn"]
@@ -172,13 +172,14 @@ class RollbackVerifyStatusTest(TempDirTest):
 
     def test_rollback_order_and_yes(self):
         runner = FakeRunner()
-        dep = Deployment(self.site, "cn", runner=runner, ops=FakeOps(), out=self.out.append)
+        dep = Deployment(self.site, "cn", runner=runner, ops=FakeOps(), out=self.out.append,
+                         ssh_view=lambda h: {"user": "root", "hostname": h})
         self.assertEqual(dep.rollback(ask=lambda p: "no"), 1)
         self.assertEqual(runner.calls, [])
         self.assertEqual(dep.rollback(ask=lambda p: "yes"), 0)
-        sent = [c[2] for c in runner.calls]
-        expected = [scripts.ROLLBACK_START, scripts.ROLLBACK_CONFIGURATION, scripts.ROLLBACK_CERT,
-                    scripts.ROLLBACK_USER_AND_DIRS, scripts.ROLLBACK_BINARY]
+        sent = [c[2] for c in runner.calls if c[1] == "cn-control"]
+        expected = [names.uninstall(self.site, "root"), scripts.ROLLBACK_START, scripts.ROLLBACK_CONFIGURATION,
+                    scripts.ROLLBACK_CERT, scripts.ROLLBACK_USER_AND_DIRS, scripts.ROLLBACK_BINARY]
         self.assertEqual(len(sent), len(expected))
         for script, body in zip(sent, expected):
             self.assertIn(body.strip(), script)

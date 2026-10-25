@@ -358,11 +358,23 @@ def cmd_line_list(args):
 
 
 def cmd_dns(args):
+    from . import names as namesmod
     from .names import Names
     site = load_site(args)
     redact = redactor(site) if args.redact else identity
     names = Names(site, remote.SSHRunner(out=lambda s: print(redact(s))),
                   out=lambda s: print(redact(s)))
+    if args.action == "stop":
+        r = site.region(args.region)
+        print(redact(f"  {r.control_host}: stop and remove the names keeper, its key and the keys that let other "
+                     "regions call it; then every region's names are written as before the keeper"))
+        if not args.yes and input(f"Type yes to remove the names keeper from {redact(r.control_host)}: ").strip() != "yes":
+            print("Nothing changed.")
+            return 1
+        names._on_control(r, namesmod.uninstall(site, names.ssh_view(r.control_host).get("user", "root")), echo=True)
+        names.sync()
+        print(f"Removed. To put it back: tn control apply {r.name}")
+        return 0
     if args.action == "list":
         rows = [("Region", "Name", "Short forms", "Address", "How")] + names.table()
         rows = [tuple(redact(c) for c in r) for r in rows]
@@ -585,6 +597,11 @@ def build_parser():
     c = s.add_parser("list", parents=[common], help="every name as each region resolves it (read-only)")
     c.set_defaults(func=cmd_dns)
     c = s.add_parser("sync", parents=[common], help="write each region's names of other regions' hosts; asks for yes")
+    c.add_argument("--yes", action="store_true", help="do not ask")
+    c.set_defaults(func=cmd_dns)
+    c = s.add_parser("stop", parents=[common],
+                     help="remove the names keeper from a region's control host (tn control apply puts it back); asks for yes")
+    c.add_argument("region")
     c.add_argument("--yes", action="store_true", help="do not ask")
     c.set_defaults(func=cmd_dns)
 

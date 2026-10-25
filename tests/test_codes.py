@@ -111,7 +111,7 @@ class CodeTest(TempDirTest):
         runner = NoControl(responses(status=status()), down=("cn-control",))
         job = self.job(runner)
         job._run_names()
-        self.assertIn("Run `tn dns sync` on a machine that can", self.out[-1])
+        self.assertIn("run `tn dns sync` on a machine that can", self.out[-1])
         job._run_verify()
         self.assertIn("    cn-control: not checked (this machine cannot log in to it)", self.out)
         self.assertIn("    verify passed", self.out)
@@ -175,7 +175,7 @@ class AppCodeTest(TempDirTest):
         self.assertIn("    made a single-use, 30m key in cn for user owner", self.out)
         self.assertIn("    ovs: not watched (this machine cannot log in to ovs-control); the block on the Mac says "
                       "whether it joined", self.out)
-        self.assertTrue(any("Run `tn dns sync` on a machine that can" in line for line in self.out))
+        self.assertTrue(any("run `tn dns sync` on a machine that can" in line for line in self.out))
         self.assertIn("    ovs-control: not checked (this machine cannot log in to it)", self.out)
         self.assertIn("    verify passed in cn; on the Mac, switch region in the Tailscale menu: cn, ovs", self.out)
 

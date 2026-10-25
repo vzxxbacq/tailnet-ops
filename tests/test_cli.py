@@ -46,21 +46,21 @@ class CliTest(TempDirTest):
     def test_plan_logs_privately_and_changes_nothing(self):
         rc, out, err = run_cli("control", "plan", "ovs", "--site", str(self.site))
         self.assertEqual(rc, 0, err)
-        self.assertIn("  8  Check TLS, DERP and STUN from ovs-probe (read-only)", out)
+        self.assertIn("  9  Check TLS, DERP and STUN from ovs-probe (read-only)", out)
         self.assertIn("  2  Install Headscale 0.29.6", out)
         self.assertIn("remove the binary", out)
-        self.assertNotIn("Step 8/8", out)
+        self.assertNotIn("Step 9/9", out)
         self.assertNotIn("set -euo pipefail", out)
         runs = self.site / "runs"
         self.assertEqual(runs.stat().st_mode & 0o777, 0o700)
         logs = list(runs.iterdir())
         self.assertEqual(len(logs), 1)
         self.assertEqual(logs[0].stat().st_mode & 0o777, 0o600)
-        self.assertIn("Step 8/8  Verify", logs[0].read_text())
+        self.assertIn("Step 9/9  Verify", logs[0].read_text())
         self.assertIn("set -euo pipefail", logs[0].read_text())
         self.assertFalse((self.site / "pki").exists())
         rc, out, _err = run_cli("control", "plan", "ovs", "--full", "--site", str(self.site))
-        self.assertIn("Step 8/8  Verify", out)
+        self.assertIn("Step 9/9  Verify", out)
 
     def test_line_list(self):
         rc, out, err = run_cli("line", "list", "--site", str(self.site))

@@ -237,7 +237,8 @@ class AppJoin(Procedure):
         missing = self.unreachable()
         if missing:
             self.out(f"    skipped: this machine cannot log in to {', '.join(r.control_host for r in missing)}. "
-                     "Run `tn dns sync` on a machine that can; until then the other regions do not know this name.")
+                     "With the names keepers from tn control apply, the name appears within a minute; "
+                     "otherwise run `tn dns sync` on a machine that can.")
             return
         names.Names(self.site, self.runner, self.out).sync()
 
