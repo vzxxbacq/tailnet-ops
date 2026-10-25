@@ -32,17 +32,24 @@ def tailscale_style_parse(b):
     return txid
 
 
-def response(txid, ip, port):
+def response(txid, ip, port, mapped_v6=False):
+    """A binding success like Tailscale's stun.Response. mapped_v6 mimics a dual-stack
+    listener, which reports an IPv4 client as ::ffff:a.b.c.d (family 2, 16 bytes)."""
     xport = port ^ (stun.MAGIC_COOKIE >> 16)
-    xaddr = bytes(a ^ b for a, b in zip(socket.inet_aton(ip), struct.pack("!I", stun.MAGIC_COOKIE)))
-    attr = struct.pack("!HHBBH", 0x0020, 8, 0, 1, xport) + xaddr
+    raw = socket.inet_aton(ip)
+    if mapped_v6:
+        raw = b"\0" * 10 + b"\xff\xff" + raw
+    key = struct.pack("!I", stun.MAGIC_COOKIE) + txid
+    xaddr = bytes(a ^ b for a, b in zip(raw, key))
+    attr = struct.pack("!HHBBH", 0x0020, 4 + len(raw), 0, 2 if mapped_v6 else 1, xport) + xaddr
     return struct.pack("!HHI", 0x0101, len(attr), stun.MAGIC_COOKIE) + txid + attr
 
 
 class FakeStunServer:
     """A strict, Tailscale-like STUN server on 127.0.0.1."""
 
-    def __init__(self):
+    def __init__(self, mapped_v6=False):
+        self.mapped_v6 = mapped_v6
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("127.0.0.1", 0))
         self.port = self.sock.getsockname()[1]
@@ -57,7 +64,7 @@ class FakeStunServer:
                 return
             txid = tailscale_style_parse(data)
             if txid is not None:
-                self.sock.sendto(response(txid, addr[0], addr[1]), addr)
+                self.sock.sendto(response(txid, addr[0], addr[1], self.mapped_v6), addr)
 
     def close(self):
         self.sock.close()
@@ -75,6 +82,19 @@ class StunTest(unittest.TestCase):
         self.assertEqual(stun.parse_response(response(txid, "203.0.113.7", 41641), txid), ("203.0.113.7", 41641))
         with self.assertRaises(ValueError):
             stun.parse_response(response(txid, "203.0.113.7", 1), os.urandom(12))
+
+    def test_parse_dual_stack_response(self):
+        txid = os.urandom(12)
+        reply = response(txid, "203.0.113.7", 41641, mapped_v6=True)
+        self.assertEqual(len(reply), 44)  # what a Headscale listening on *:3478 sends
+        self.assertEqual(stun.parse_response(reply, txid), ("203.0.113.7", 41641))
+
+    def test_probe_against_dual_stack_server(self):
+        server = FakeStunServer(mapped_v6=True)
+        try:
+            self.assertEqual(stun.probe("127.0.0.1", server.port, attempts=2, timeout=1)[0], "127.0.0.1")
+        finally:
+            server.close()
 
     def test_probe_against_strict_server(self):
         server = FakeStunServer()

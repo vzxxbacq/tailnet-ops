@@ -51,13 +51,22 @@ def parse_response(data, txid):
         atype, alen = struct.unpack("!HH", attrs[:4])
         value = attrs[4 : 4 + alen]
         attrs = attrs[4 + ((alen + 3) & ~3) :]
-        if atype in (ATTR_XOR_MAPPED_ADDRESS, ATTR_MAPPED_ADDRESS) and len(value) >= 8 and value[1] == 1:
+        if atype in (ATTR_XOR_MAPPED_ADDRESS, ATTR_MAPPED_ADDRESS) and len(value) >= 8 and value[1] in (1, 2):
+            # Family 1 is IPv4. Family 2 is IPv6; a dual-stack server such as Headscale on
+            # *:3478 reports an IPv4 client as an IPv4-mapped IPv6 address.
+            size = 4 if value[1] == 1 else 16
+            if len(value) < 4 + size:
+                continue
             port = struct.unpack("!H", value[2:4])[0]
-            addr = value[4:8]
+            addr = value[4:4 + size]
             if atype == ATTR_XOR_MAPPED_ADDRESS:
                 port ^= MAGIC_COOKIE >> 16
-                addr = bytes(a ^ b for a, b in zip(addr, struct.pack("!I", MAGIC_COOKIE)))
-            mapped = (socket.inet_ntoa(addr), port)
+                key = struct.pack("!I", MAGIC_COOKIE) + txid
+                addr = bytes(a ^ b for a, b in zip(addr, key))
+            if size == 16 and addr[:12] == b"\0" * 10 + b"\xff\xff":
+                addr = addr[12:]
+            family = socket.AF_INET if len(addr) == 4 else socket.AF_INET6
+            mapped = (socket.inet_ntop(family, addr), port)
             if atype == ATTR_XOR_MAPPED_ADDRESS:
                 break
     if mapped is None:
