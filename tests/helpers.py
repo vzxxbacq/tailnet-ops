@@ -55,7 +55,7 @@ class FakeRunner:
         self.responses = responses or {}
         self.fail_on = fail_on
 
-    def run(self, host, script, args=(), privileged=False, check=True, echo=True):
+    def run(self, host, script, args=(), privileged=False, check=True, echo=True, secret=False):
         self.calls.append(("run", host, script, tuple(args), privileged))
         if self.fail_on and self.fail_on in script:
             if check:

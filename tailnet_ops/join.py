@@ -322,10 +322,10 @@ def preauth_key(tags):
 """
 
 
-def user_key(user_id):
+def user_key(user_id, expiry=pins.PREAUTH_KEY_EXPIRY):
     """A key owned by a user, without tags: a personal device belongs to the owner."""
     return f"""# Prints only the key, on stdout, which goes straight into `tailscale login` on the device.
-"$BIN" preauthkeys create --expiration {pins.PREAUTH_KEY_EXPIRY} --user {user_id}
+"$BIN" preauthkeys create --expiration {expiry} --user {user_id}
 """
 
 

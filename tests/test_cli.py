@@ -120,6 +120,21 @@ class CliTest(TempDirTest):
         self.assertIn("No machines joined by tn join yet", out)
         self.assertIn("Hosts in site.toml join as servers of their region: cn-control, cn-probe", out)
 
+    def test_join_an_app_mac(self):
+        rc, out, err = run_cli("join", "plan", "air", "--app", "--region", "ovs", "--offline", "--site", str(self.site))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("air → a Mac with the Tailscale app, personal device of owner in ovs, cn; starts on ovs", out)
+        self.assertIn("Write the app's profile", out)
+        rc, _out, err = run_cli("join", "plan", "--app", "--offline", "--site", str(self.site))
+        self.assertEqual(rc, 1)
+        self.assertIn("name the Mac", err)
+        sitemod.write_joined(self.site, {"air": {"ssh": None, "app": True, "role": "personal", "region": "cn"}})
+        rc, out, _err = run_cli("join", "list", "--site", str(self.site))
+        self.assertIn("air   Tailscale app  personal  cn", out)
+        rc, out, err = run_cli("join", "plan", "air", "--offline", "--site", str(self.site))   # the record says app
+        self.assertEqual(rc, 0, err)
+        self.assertIn("starts on cn", out)
+
     def test_join_asks_only_in_a_terminal(self):
         rc, _out, err = run_cli("join", "--site", str(self.site))
         self.assertEqual(rc, 1)

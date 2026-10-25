@@ -84,7 +84,8 @@ class SSHRunner:
         if self.log is not None:
             self.log(text)
 
-    def run(self, host, script, args=(), privileged=False, check=True, echo=True):
+    def run(self, host, script, args=(), privileged=False, check=True, echo=True, secret=False):
+        """secret: the output is a secret (a pre-auth key): it is returned, never printed or logged."""
         cmd = self.command(host, remote_command(args, privileged, self._interactive(host)))
         where = "this machine" if host in self.local_hosts else f"ssh {host}"
         self._log(f"$ {where} {'(root)' if privileged else ''}\n{script}")
@@ -100,6 +101,8 @@ class SSHRunner:
             elif line.startswith("TN-END "):
                 hidden = False
             # Printed lines reach the log through out(); log the rest directly.
+            if secret:
+                continue
             if echo and not hidden and not line.startswith(("TN-FACT ", "TN-BEGIN ", "TN-END ")):
                 self.out(f"    {line}")
             else:

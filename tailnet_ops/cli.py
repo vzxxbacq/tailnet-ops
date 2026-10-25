@@ -11,6 +11,7 @@ from .join import Join
 from .line import Line
 from .procedure import StepError
 from .redact import Redactor, identity
+from .site import dns_label
 
 EPILOG = """Site directory: --site DIR, else $TN_SITE, else ~/.config/tailnet-ops.
 Nothing on a server changes unless you run apply or rollback and type yes."""
@@ -155,7 +156,13 @@ def cmd_join(args):
         print(ui.bold("tn join") + ui.dim(" · add a machine to the tailnet. Nothing changes until you type yes.\n"))
         answers = targets.ask(site, ui, remote.ssh_aliases(), host=host, given=options, pick=args.host is None)
         host = answers.pop("host")
+        args.app = answers.pop("app", False) or args.app
         options.update({k: v for k, v in answers.items() if v is not None})
+        if args.app:
+            host = options.get("name")
+    rec_name, rec = targets.find_record(site, host) if host or not args.app else (None, None)
+    if args.app or (rec or {}).get("app"):
+        return join_app(site, args, action, rec_name or host, options.get("region") or (rec or {}).get("region"), ui)
     target = targets.resolve(site, host, **options, detect_os=None if args.offline else detect_os)
     console = Console(redactor(site) if args.redact else identity,
                       run_log(site, f"join-{action or 'ask'}", target.name))
@@ -189,14 +196,43 @@ def code_asker(ui):
     return ask
 
 
-def join_asked(job, console, ui, target, offline=False):
+def join_app(site, args, action, name, region, ui):
+    """A Mac with the Tailscale app: tn runs here and hands the Mac a profile and one block to paste."""
+    from .appjoin import AppJoin
+    if not name:
+        raise ValueError("name the Mac: tn join plan <name> --app")
+    if dns_label(name) != name.lower():
+        raise ValueError(f"{name!r} is not a usable name; use letters, digits and '-'")
+    region = region or next(iter(site.regions))
+    console = Console(redactor(site) if args.redact else identity, run_log(site, f"join-{action or 'ask'}", name))
+    runner = remote.SSHRunner(out=console.out, log=console.log)
+    job = AppJoin(site, name, region, runner=runner, out=console.out, show=console.show)
+
+    def remember(j):
+        site.joined[j.name] = j.record()
+        sitemod.write_joined(site.directory, site.joined)
+
+    job.remember = remember
+    job.forget = lambda j: targets.forget(site, j)
+    if ui.tty and not args.yes:
+        job.pause = input
+    later = f"./tn join apply {name} --app --region {job.region.name}"
+    try:
+        if action is None:
+            return join_asked(job, console, ui, later=later, offline=args.offline)
+        return run_job(job, console, args, action)
+    finally:
+        console.close()
+
+
+def join_asked(job, console, ui, target=None, offline=False, later=None):
     """After the questions: check, show the short plan, and apply only if asked."""
     checks = None
     if not offline:
-        print(ui.dim("\nChecking the machine (read-only)…"))
+        print(ui.dim("\nChecking (read-only)…"))
         checks = job.check()
     show_plan(job, console, False, checks)
-    later = targets.command_line(target)
+    later = later or targets.command_line(target)
     if checks and checks["fails"]:
         print(f"\nFix the problems above, then run: {later}")
         return 1
@@ -221,7 +257,8 @@ def join_list(site, args):
     redact = redactor(site) if args.redact else identity
     rows = [("Name", "Machine", "How", "Region", "OS")]
     for name, rec in sorted(site.joined.items()):
-        rows.append((name, f"ssh {rec['ssh']}" if rec.get("ssh") else "this machine", rec.get("role", "server"),
+        machine = "Tailscale app" if rec.get("app") else (f"ssh {rec['ssh']}" if rec.get("ssh") else "this machine")
+        rows.append((name, machine, rec.get("role", "server"),
                      rec.get("region", "?"), rec.get("os", "linux")))
     if len(rows) == 1:
         print("No machines joined by tn join yet, apart from the hosts in site.toml.")
@@ -452,7 +489,8 @@ def build_parser():
                     "  tn join                          ask which machine, how and where, then show the plan\n"
                     "  tn join plan|apply [host] ...    the same from options; no host = this machine\n"
                     "  tn join verify|rollback [host]   uses what apply recorded\n"
-                    "  tn join list                     machines joined so far\n\n"
+                    "  tn join list                     machines joined so far\n"
+                    "  tn join plan|apply <name> --app  a Mac with the Tailscale app (a laptop): no SSH to it\n\n"
                     "A server joins one region with a tagged key. A personal device joins every region\n"
                     "as the owner, one Tailscale profile each (sudo tailscale switch <region>).\n"
                     "Only hosts that others use (control hosts, checkers, line ends) are in site.toml.")
@@ -462,6 +500,8 @@ def build_parser():
     how = p.add_mutually_exclusive_group()
     how.add_argument("--personal", action="store_true", help="the owner's device, in every region")
     how.add_argument("--server", action="store_true", help="one region, tagged (the default)")
+    how.add_argument("--app", action="store_true",
+                     help="a Mac with the Tailscale app: a profile to install and one block to paste there")
     p.add_argument("--region", help="a server's region; where a personal device starts")
     p.add_argument("--name", help="its name in the tailnet (default: the SSH alias or this machine's name)")
     p.add_argument("--port", type=int, help=f"tailscaled's UDP port (default {pins.DEFAULT_TAILSCALE_PORT})")

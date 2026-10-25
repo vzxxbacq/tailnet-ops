@@ -62,7 +62,8 @@ def from_site(site, alias):
 def find_record(site, host):
     """(name, record) of a joined machine by name or SSH alias; host None = this machine."""
     for name, rec in site.joined.items():
-        if (host is None and rec.get("ssh") is None) or (host is not None and host in (name, rec.get("ssh"))):
+        this = rec.get("ssh") is None and not rec.get("app")       # a Mac with the app is not this machine
+        if (host is None and this) or (host is not None and host in (name, rec.get("ssh"))):
             return name, rec
     return None, None
 
@@ -157,6 +158,19 @@ def _joined_hint(rec):
     return f"joined: {rec.get('role', 'server')} in {rec.get('region')}" if rec else ""
 
 
+def ask_app(site, ui, given=None):
+    """A Mac with the Tailscale app: its name, and the region it starts on."""
+    given = given or {}
+    out = {"host": None, "app": True}
+    if given.get("name") is None:
+        out["name"] = ui.text("Its name in the tailnet", "air",
+                              check=lambda v: None if dns_label(v) == v.lower() else "letters, digits and '-'")
+    if given.get("region") is None:
+        regions = [(r.name, r.name, f"Headscale on {r.control_host}") for r in site.regions.values()]
+        out["region"] = ui.select("Which region does it start in?", regions)
+    return out
+
+
 def ask(site, ui, ssh_aliases=(), host=None, given=None, pick=True):
     """Ask which machine joins (unless pick is False: then it is host), how, where and under which
     name, skipping what the command line already gave. Returns resolve()'s keyword arguments."""
@@ -169,8 +183,11 @@ def ask(site, ui, ssh_aliases=(), host=None, given=None, pick=True):
         for alias in ssh_aliases:
             _n, rec = find_record(site, alias)
             machines.append((alias, alias, _site_role(site, alias) or _joined_hint(rec) or "over SSH"))
+        machines.append(("app", "A Mac with the Tailscale app…", "a laptop: a profile to install and one paste; no SSH"))
         machines.append(("?", "Another machine…", "type its SSH alias"))
         host = ui.select("Which machine joins?", machines)
+        if host == "app":
+            return ask_app(site, ui, given)
         if host == "?":
             host = ui.text("SSH alias", check=lambda v: None if v and dns_label(v) else "an SSH alias from ~/.ssh/config")
     rec_name, rec = find_record(site, host)
