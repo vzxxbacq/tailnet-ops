@@ -15,6 +15,7 @@ import shlex
 import ssl
 import uuid
 
+from . import pins
 from .privacy import CGNAT
 
 APP = "/Applications/Tailscale.app"
@@ -78,17 +79,54 @@ def profile(site, name, label, ca_pem):
     return plistlib.dumps(top, sort_keys=False)
 
 
+def app_lines():
+    """Shell lines that make the Tailscale app ready: install the pinned official package when the app
+    is missing (checked against its sha256 and its signer), open it, and wait until it answers, which
+    it does once you allow its system extension and VPN configuration."""
+    return [
+        f"T={shlex.quote(APP_CLI)}",
+        'if [ ! -x "$T" ]; then',
+        f'  echo "Installing Tailscale {pins.TAILSCALE_APP_VERSION}, the official package signed by Tailscale Inc.; '
+        'sudo asks for your password."',
+        "  d=$(mktemp -d /tmp/tn-tailscale-app.XXXXXX)",
+        f'  curl -fsSL --max-time 600 -o "$d/Tailscale.pkg" {shlex.quote(pins.TAILSCALE_APP_URL)} '
+        '|| { rm -rf "$d"; echo "download failed"; exit 1; }',
+        f'  [ "$(shasum -a 256 "$d/Tailscale.pkg" | cut -d" " -f1)" = {pins.TAILSCALE_APP_SHA256} ] '
+        '|| { rm -rf "$d"; echo "the package does not match its pinned sha256"; exit 1; }',
+        f'  pkgutil --check-signature "$d/Tailscale.pkg" | grep -qF {shlex.quote(pins.TAILSCALE_APP_SIGNER)} '
+        '|| { rm -rf "$d"; echo "the package is not signed by Tailscale Inc."; exit 1; }',
+        '  sudo installer -pkg "$d/Tailscale.pkg" -target / || { rm -rf "$d"; exit 1; }',
+        '  rm -rf "$d"',
+        "fi",
+        "open -a Tailscale",
+        "asked=no",
+        "for _ in $(seq 1 150); do",
+        '  "$T" status --json >/dev/null 2>&1 && break',
+        '  if [ "$asked" = no ]; then',
+        '    echo "When macOS asks, allow Tailscale\'s system extension (System Settings → General → Login Items &'
+        ' Extensions) and its VPN configuration. Waiting up to 5 minutes."',
+        "    asked=yes",
+        "  fi",
+        "  sleep 2",
+        "done",
+        '"$T" status --json >/dev/null 2>&1 || { echo "Tailscale did not start: allow its system extension and VPN '
+        'configuration, then run this again."; exit 1; }',
+        'echo "the Tailscale app is ready"',
+    ]
+
+
+def app_block():
+    """Shell text that makes the Tailscale app ready on this Mac."""
+    return "\n".join(["/bin/bash <<'TN_EOF'", *app_lines(), "TN_EOF"]) + "\n"
+
+
 def login_block(site, regions, keys, home):
-    """Shell text to paste into Terminal on the Mac: an account per region, then the home region.
-    keys: {region name: pre-auth key}. Accounts that are there already are left alone."""
+    """Shell text to paste into Terminal on the Mac: the app made ready (installed if missing), an
+    account per region, then the home region. keys: {region name: pre-auth key}. Accounts that are
+    there already are left alone."""
     lines = [
         "/bin/bash <<'TN_EOF'",
-        f"T={shlex.quote(APP_CLI)}",
-        '[ -x "$T" ] || { echo "Install the Tailscale app first: https://tailscale.com/download/mac"; exit 1; }',
-        "open -a Tailscale",
-        'for _ in 1 2 3 4 5 6 7 8 9 10; do "$T" status --json >/dev/null 2>&1 && break; sleep 1; done',
-        '"$T" status --json >/dev/null 2>&1 || { echo "Open Tailscale, allow its system extension and VPN '
-        'configuration, then paste this again."; exit 1; }',
+        *app_lines(),
         "account() {",
         '  if "$T" switch --list --json 2>/dev/null | grep -q "\\"nickname\\": \\"$1\\""; then echo "$1: already there"',
         '  else "$T" login --login-server="$2" --nickname="$1" --auth-key="$3" --timeout=60s && echo "$1: joined"; fi',

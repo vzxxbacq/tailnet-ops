@@ -27,6 +27,11 @@ TAILSCALE_BIN_SHA256 = {
     },
 }
 TAILSCALE_URL = "https://pkgs.tailscale.com/stable/tailscale_{version}_{arch}.tgz"
+# The standalone macOS app: the official package, notarized, signed by Tailscale Inc.
+TAILSCALE_APP_VERSION = "1.104.2"
+TAILSCALE_APP_URL = f"https://pkgs.tailscale.com/stable/Tailscale-{TAILSCALE_APP_VERSION}-macos.pkg"
+TAILSCALE_APP_SHA256 = "1724d2e021d3c5f817f427f628260c013531a528f1258a7d477735d198b11f55"
+TAILSCALE_APP_SIGNER = "Developer ID Installer: Tailscale Inc. (W5364U7YZB)"
 DEFAULT_TAILSCALE_PORT = 41641
 PREAUTH_KEY_EXPIRY = "10m"
 JOIN_CODE_EXPIRY = "30m"   # a link code made by hand elsewhere and pasted in

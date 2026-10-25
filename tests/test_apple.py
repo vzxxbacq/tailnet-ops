@@ -1,5 +1,6 @@
 """A Mac with the Tailscale app: the profile, the block to paste, the Clash script, tn join --app."""
 
+import hashlib
 import json
 import os
 import plistlib
@@ -7,8 +8,9 @@ import shutil
 import ssl
 import subprocess
 import unittest
+from unittest import mock
 
-from tailnet_ops import apple, join, targets
+from tailnet_ops import apple, join, pins, targets
 from tailnet_ops.appjoin import AppJoin
 from tailnet_ops.procedure import StepError
 from tailnet_ops.remote import Result
@@ -105,6 +107,62 @@ console.log(JSON.stringify(after));"""
         self.assertEqual(after["rules"].count("DOMAIN-SUFFIX,tailnet.internal,DIRECT"), 1)   # twice is the same
         self.assertEqual(after["tun"]["route-exclude-address"][0], "192.0.2.0/24")
         self.assertTrue(after["tun"]["enable"])
+
+
+class AppInstallTest(TempDirTest):
+    """The lines that install, open and wait for the app, with stub commands."""
+
+    def run_app(self, app_there=False, sha_ok=True, signed=True):
+        stubs = self.tmp / "stubs"
+        stubs.mkdir(exist_ok=True)
+        log = self.tmp / "calls"
+        cli = stubs / "Tailscale"
+        stub = '#!/bin/sh\necho "$(basename "$0") $*" >> "$CALLS"\n'
+        files = {
+            "curl": stub + 'for a; do case "$prev" in -o) printf pkg > "$a" ;; esac; prev=$a; done\n',
+            "pkgutil": stub + (f'echo "   1. {pins.TAILSCALE_APP_SIGNER}"\n' if signed else 'echo "   1. Someone Else"\n'),
+            "sudo": stub + f'cp "{stubs}/Tailscale.ready" "{cli}"; chmod +x "{cli}"\n',
+            "open": stub,
+            "seq": '#!/bin/sh\necho 1\n',
+            "sleep": "#!/bin/sh\nexit 0\n",
+            "Tailscale.ready": stub + "exit 0\n",
+        }
+        for name, text in files.items():
+            (stubs / name).write_text(text)
+            (stubs / name).chmod(0o755)
+        if app_there:
+            shutil.copy(stubs / "Tailscale.ready", cli)
+        elif cli.exists():
+            cli.unlink()
+        sha = hashlib.sha256(b"pkg").hexdigest() if sha_ok else "0" * 64
+        with mock.patch.object(pins, "TAILSCALE_APP_SHA256", sha):
+            block = apple.app_block().replace(f"T={apple.APP_CLI}", f"T={cli}")
+        p = run_bash(block.split("\n", 1)[1].rsplit("TN_EOF", 1)[0],
+                     env={**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}", "CALLS": str(log)})
+        return p, (log.read_text() if log.exists() else "")
+
+    def test_installs_the_checked_package(self):
+        p, calls = self.run_app()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn(f"curl -fsSL --max-time 600 -o", calls)
+        self.assertRegex(calls, r"sudo installer -pkg /tmp/tn-tailscale-app\.\w+/Tailscale\.pkg -target /")
+        self.assertIn("open -a Tailscale", calls)
+        self.assertIn("the Tailscale app is ready", p.stdout)
+
+    def test_refuses_a_wrong_package(self):
+        for kw, why in (({"sha_ok": False}, "does not match its pinned sha256"),
+                        ({"signed": False}, "is not signed by Tailscale Inc.")):
+            with self.subTest(**kw):
+                p, calls = self.run_app(**kw)
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn(why, p.stdout)
+                self.assertNotIn("installer", calls)
+
+    def test_leaves_an_installed_app_alone(self):
+        p, calls = self.run_app(app_there=True)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertNotIn("curl", calls)
+        self.assertIn("open -a Tailscale", calls)
 
 
 class Runner(FakeRunner):
@@ -232,8 +290,10 @@ class HereTest(TempDirTest):
         job = self.job(local)
         self.assertEqual(job.apply(yes=True), 0, "\n".join(self.out))
         self.assertEqual(local.opened, [self.site.directory / "out" / "here-mac.mobileconfig"])
-        self.assertEqual(len(local.blocks), 1)
-        self.assertIn(KEY_CN, local.blocks[0])
+        self.assertEqual(len(local.blocks), 2)                       # make the app ready, then the accounts
+        self.assertIn("installer -pkg", local.blocks[0])
+        self.assertNotIn(KEY_CN, local.blocks[0])
+        self.assertIn(KEY_CN, local.blocks[1])
         self.assertEqual((self.clip, self.shown), ([], []))           # nothing to paste, nothing shown
         self.assertFalse(any(KEY_CN in line or KEY_OVS in line for line in self.out))
         self.assertTrue(job.record()["here"])

@@ -102,6 +102,10 @@ class AppJoin(Procedure):
             raise StepError("not ready")
         self.out(f"    every control host answers; user {self.site.owner_user} is in every region")
 
+    def _run_app(self):
+        if self.local.run(apple.app_block(), self.out) != 0:
+            raise StepError("the Tailscale app is not ready; see above")
+
     def _run_profile(self):
         if self.ca_from:
             siteca.save(self.site, self._ca())
@@ -262,9 +266,22 @@ class AppJoin(Procedure):
                  "script in Clash Verge", run=self._run_clash, undo=lambda: self._remove(self.clash_path),
                  brief="Write the Clash Verge script", undo_brief="delete the file"),
         ]
-        for s in steps:
-            s.host = "this machine" if s.number in (2, 7) else controls
-            if s.number in (2, 7):
+        if self.here:
+            steps.insert(1, Step(0, "Tailscale app",
+                                 [f"Unless the app is in {apple.APP}: download Tailscale {pins.TAILSCALE_APP_VERSION}, the "
+                                  "official package, check its pinned sha256",
+                                  "and that Tailscale Inc. signed it, install it with sudo. Open the app and wait until "
+                                  "it answers: macOS asks you",
+                                  "to allow its system extension and VPN configuration."],
+                                 [Action("local", "install if missing, open, wait", apple.app_block())],
+                                 rollback_note="none: the app stays (remove it like any app)", run=self._run_app,
+                                 brief=f"Install and open the Tailscale app ({pins.TAILSCALE_APP_VERSION})",
+                                 undo_brief="the app stays"))
+        local = {"Tailscale app", "Profile", "Clash Verge"}
+        for number, s in enumerate(steps, 1):
+            s.number = number
+            s.host = "this machine" if s.title in local else controls
+            if s.title in local:
                 s.rollback_host = "this machine, without root"
         return steps
 
@@ -304,9 +321,12 @@ class AppJoin(Procedure):
         for r in self.regions:
             out.append(f"  {r.name:<12}  {r.server_url}, name {self.label}.{r.name}.{r.base_domain}")
         if self.here:
-            out.append("  this Mac      you install the profile when it opens; tn then adds the accounts to the app")
+            app = ("installed" if Path(apple.APP).exists()
+                   else f"not installed: tn installs Tailscale {pins.TAILSCALE_APP_VERSION} (official, signed)")
+            out.append(f"  this Mac      the app is {app}; you install the profile when it opens; tn adds the accounts")
         else:
-            out.append("  on the Mac    install the profile (AirDrop), paste one block in Terminal; no SSH, no tn")
+            out.append("  on the Mac    install the profile (AirDrop), paste one block in Terminal: it installs the app "
+                       "if missing; no SSH, no tn")
         out.append(f"  this machine  writes {self.profile_path.parent}/{self.name}.*, makes single-use keys")
         if self.ca_from:
             out.append(f"  site CA       from {self.ca_from}: it authenticates every login server; a copy goes to pki/")
@@ -362,9 +382,6 @@ class Local:
 
     def problems(self):
         out = []
-        if not Path(apple.APP).exists():
-            out.append(f"the Tailscale app is not in {apple.APP}; install the standalone build from "
-                       "https://tailscale.com/download/mac and open it once")
         if Path(macos.PLIST).exists():
             out.append("this Mac runs tailscaled from tn join (command line); roll that back first, or keep it")
         elif subprocess.run(["pgrep", "-x", "tailscaled"], capture_output=True).returncode == 0:

@@ -33,7 +33,7 @@
 | `./tn join verify [机器]` | 只读检查：已连上、地址在本区网段、标签正确（个人设备没有标签、每个区都有账号）、用本区 DERP |
 | `./tn join rollback [机器]` | 退出 tailnet，删掉入网时加的东西和那条记录，要输入 `yes` |
 | `./tn join list` | 列出用 tn join 加入的机器 |
-| `./tn join apply <名字> --app` | 用 Tailscale App（独立版）的 Mac，比如笔记本：在能连上控制机的机器上运行。生成 App 能读的描述文件（站点 CA、名字、subnets 和 DNS），隔空投送过去安装；再给一段命令到那台 Mac 的终端粘贴，给每个区各加一个账号；最后生成 Clash Verge 的扩展脚本。那台 Mac 不用 SSH，也不用装 tn |
+| `./tn join apply <名字> --app` | 用 Tailscale App（独立版）的 Mac，比如笔记本：在能连上控制机的机器上运行。没装 App 时先下载官方安装包（核对固定的 sha256 和 Tailscale 公司的签名）并安装；生成 App 能读的描述文件（站点 CA、名字、subnets 和 DNS），在系统设置里安装；再给每个区各加一个账号（本机直接完成，另一台 Mac 粘贴一段命令）；最后生成 Clash Verge 的扩展脚本。那台 Mac 不用 SSH，也不用装 tn |
 | `./tn line list` | 列出站点里的所有专线：两端、入口、隧道地址、优先级（只读 `site.toml`） |
 | `./tn line plan <line>` | 只读检查专线两端和它们的防火墙，列出会挡住转发的链、步骤和撤销方法 |
 | `./tn line apply <line>` | 拉通两个 tailnet：WireGuard 隧道、地址映射和 NAT、给挡路的防火墙链加带标记的放行规则、宣告并批准路由、更新策略，最后逐台 ping 对方区的机器。要输入 `yes` |
