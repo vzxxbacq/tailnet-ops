@@ -125,9 +125,9 @@ class AskTest(TempDirTest):
         got, ui = self.ask({"Which machine?": None, "How does it join?": "personal",
                             "Which region first?": "ovs"})
         self.assertEqual(got, {"host": None, "os_name": "linux", "role": "personal", "region": "ovs",
-                               "name": "owners-mac"})
+                               "port": 41641, "name": "owners-mac"})
         self.assertEqual(ui.asked, ["Which Tailscale?", "Which OS?", "Which machine?", "How does it join?",
-                                    "Which region first?", "Its name in the tailnet"])
+                                    "Which region first?", "UDP port for Tailscale (behind NAT: one the provider passes)", "Its name in the tailnet"])
 
     def test_the_os_decides_whether_this_machine_is_offered(self):
         got, ui = self.ask({"Which OS?": "macos", "Which machine?": "box"}, this_os="linux")
@@ -153,7 +153,7 @@ class AskTest(TempDirTest):
         self.assertEqual(ui.notes, ["cn-control is the control host of cn: it joins cn as a server."])
 
     def test_options_skip_their_questions(self):
-        got, ui = self.ask({}, host="box", given={"role": "server", "region": "cn"}, pick=False)
+        got, ui = self.ask({}, host="box", given={"role": "server", "region": "cn", "port": 20531}, pick=False)
         self.assertEqual(got, {"host": "box", "name": "box"})
         self.assertEqual(ui.asked, ["Its name in the tailnet"])
         got, ui = self.ask({"Which Mac?": "other"}, this_os="macos", given={"app": True})
@@ -162,7 +162,15 @@ class AskTest(TempDirTest):
     def test_another_machine_by_alias(self):
         got, _ui = self.ask({"Which machine?": "?", "SSH alias": "far-box", "Which region?": "ovs"})
         self.assertEqual(got, {"host": "far-box", "os_name": "linux", "role": "server", "region": "ovs",
-                               "name": "far-box"})
+                               "port": 41641, "name": "far-box"})
+
+    def test_a_nat_machine_gives_its_port(self):
+        got, ui = self.ask({"Which machine?": "box", "Which region?": "ovs", "UDP port for Tailscale (behind NAT: one the provider passes)": "20531"})
+        self.assertEqual(got["port"], 20531)
+        with self.assertRaises(AssertionError):                      # not a port: asked again in a real UI
+            self.ask({"Which machine?": "box", "UDP port for Tailscale (behind NAT: one the provider passes)": "70000"})
+        got, ui = self.ask({"Which Tailscale?": "app", "Which Mac?": "other"}, this_os="macos")
+        self.assertNotIn("UDP port for Tailscale (behind NAT: one the provider passes)", ui.asked)                       # the app picks its own port
 
 
 class TuiTest(unittest.TestCase):

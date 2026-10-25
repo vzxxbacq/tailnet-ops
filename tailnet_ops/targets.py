@@ -182,6 +182,16 @@ def _index(options, value):
     return values.index(value) if value in values else 0
 
 
+def _check_port(value):
+    return None if value.isdigit() and 1 <= int(value) <= 65535 else "a port number from 1 to 65535"
+
+
+def ask_port(ui, default=None):
+    """tailscaled's UDP port. Behind NAT, one of the ports the provider passes, so peers can come in."""
+    return int(ui.text("UDP port for Tailscale (behind NAT: one the provider passes)",
+                       str(default or pins.DEFAULT_TAILSCALE_PORT), check=_check_port))
+
+
 def ask_first_region(site, ui, default=None):
     """A personal device joins every region at once; this only picks the one it uses first."""
     names = list(site.regions)
@@ -227,7 +237,7 @@ def ask(site, ui, ssh_aliases=(), host=None, given=None, pick=True, detect_os=No
         for alias in ssh_aliases:
             _n, rec = find_record(site, alias)
             machines.append((alias, alias, _site_role(site, alias) or _joined_hint(rec) or "over SSH"))
-        machines.append(("?", "Another machine…", "type its SSH alias"))
+        machines.append(("?", "Another machine…", "type its SSH alias; a custom SSH port goes in ~/.ssh/config"))
         host = ui.select("Which machine?", machines)
         if host == "?":
             host = ui.text("SSH alias", check=lambda v: None if v and dns_label(v) else "an SSH alias from ~/.ssh/config")
@@ -254,6 +264,8 @@ def ask(site, ui, ssh_aliases=(), host=None, given=None, pick=True, detect_os=No
     elif given.get("region") is None:
         regions = [(r.name, r.name, f"Headscale on {r.control_host}, {r.ipv4_prefix}") for r in site.regions.values()]
         out["region"] = ui.select("Which region?", regions, default=_index(regions, rec.get("region")))
+    if given.get("port") is None:
+        out["port"] = ask_port(ui, rec.get("port"))
     if given.get("name") is None:
         default = rec_name or (here if host is None else host)
         out["name"] = ui.text("Its name in the tailnet", default,

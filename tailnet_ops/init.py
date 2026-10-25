@@ -179,8 +179,8 @@ def ask_answers(asker):
                 f"  {name}: tailnet IPv4 prefix inside 100.64.0.0/10 (empty to pick a free /24)",
                 None, _check_prefix, allow_empty=True),
             "ports": parse_ports(asker.ask(
-                f"  {name}: ports the provider lets in to the control host, used in order for HTTPS, STUN and "
-                "Tailscale (e.g. 20000-20002; empty if any port can be opened)",
+                f"  {name}: ports the provider lets in to the control host, 3 in this order: HTTPS and the relay "
+                "(TCP), STUN (UDP), the host's own Tailscale (UDP); e.g. 20000-20002; empty if any port can be opened",
                 None, _check_ports, allow_empty=True)),
         })
     while True:
