@@ -61,13 +61,19 @@ class FilesTest(TempDirTest):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn(f"account cn https://198.51.100.10:9443 {KEY_CN}", block)
         self.assertIn(f"account ovs https://203.0.113.20:9443 {KEY_OVS}", block)
-        self.assertTrue(block.rstrip().endswith('"$T" switch ovs\nTN_EOF'))
+        self.assertTrue(block.rstrip().endswith('"$T" switch ovs >/dev/null 2>&1 || true\n[ "$ok" = yes ]\nTN_EOF'))
+        self.assertNotIn("add-trusted-cert", block)                    # without the CA: no trust lines
+        with_ca = apple.login_block(self.site, regions, {"cn": KEY_CN, "ovs": KEY_OVS}, regions[1], CA)
+        self.assertLess(with_ca.index("add-trusted-cert"), with_ca.index("account cn"))
+        p = subprocess.run([bash(), "-n"], input=with_ca, capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
 
     def test_login_block_runs_and_skips_existing_accounts(self):
         stubs = self.tmp / "stubs"
         stubs.mkdir()
         log = self.tmp / "calls"
         (stubs / "open").write_text("#!/bin/sh\nexit 0\n")
+        (stubs / "security").write_text("#!/bin/sh\nexit 0\n")         # the CA is trusted
         (stubs / "Tailscale").write_text(
             '#!/bin/sh\necho "$*" >> "$CALLS"\n'
             'case "$1" in switch) [ "$2" = --list ] && echo \'[{"nickname": "cn"}]\' ;; esac\nexit 0\n')
@@ -163,6 +169,55 @@ class AppInstallTest(TempDirTest):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertNotIn("curl", calls)
         self.assertIn("open -a Tailscale", calls)
+
+
+class TrustTest(TempDirTest):
+    """The lines that make macOS trust the site CA, with stub commands."""
+
+    def setUp(self):
+        super().setUp()
+        self.site = self.load_site()
+
+    def run_trust(self, trusted=False, takes=True):
+        site = self.site
+        stubs = self.tmp / "stubs"
+        stubs.mkdir(exist_ok=True)
+        log = self.tmp / "calls"
+        log.unlink(missing_ok=True)
+        state = self.tmp / "trusted"
+        if trusted:
+            state.write_text("")
+        files = {
+            "security": '#!/bin/sh\necho "security $*" >> "$CALLS"\n'
+                        f'case "$1" in verify-cert) [ -f "{state}" ] ;; add-trusted-cert) '
+                        + (f'touch "{state}"' if takes else "exit 1") + " ;; esac\n",
+            "sudo": '#!/bin/sh\necho "sudo $*" >> "$CALLS"\nexec "$@"\n',
+        }
+        for name, text in files.items():
+            (stubs / name).write_text(text)
+            (stubs / name).chmod(0o755)
+        block = apple.trust_block(site, CA)
+        p = run_bash(block.split("\n", 1)[1].rsplit("TN_EOF", 1)[0],
+                     env={**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}", "CALLS": str(log)})
+        return p, (log.read_text() if log.exists() else "")
+
+    def test_trusts_once(self):
+        p, calls = self.run_trust()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("sudo security add-trusted-cert -d -r trustRoot -p ssl -k /Library/Keychains/System.keychain", calls)
+        self.assertIn("macOS trusts the site CA", p.stdout)
+        p, calls = self.run_trust(trusted=True)
+        self.assertNotIn("add-trusted-cert", calls)
+
+    def test_says_when_macos_refuses(self):
+        p, _calls = self.run_trust(takes=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("macOS did not trust the site CA", p.stdout)
+
+    def test_untrust_command(self):
+        sha1 = hashlib.sha1(ssl.PEM_cert_to_DER_cert(CA)).hexdigest().upper()
+        self.assertEqual(apple.untrust_command(CA),
+                         f"sudo security delete-certificate -Z {sha1} /Library/Keychains/System.keychain")
 
 
 class Runner(FakeRunner):
@@ -290,10 +345,11 @@ class HereTest(TempDirTest):
         job = self.job(local)
         self.assertEqual(job.apply(yes=True), 0, "\n".join(self.out))
         self.assertEqual(local.opened, [self.site.directory / "out" / "here-mac.mobileconfig"])
-        self.assertEqual(len(local.blocks), 2)                       # make the app ready, then the accounts
-        self.assertIn("installer -pkg", local.blocks[0])
-        self.assertNotIn(KEY_CN, local.blocks[0])
-        self.assertIn(KEY_CN, local.blocks[1])
+        self.assertEqual(len(local.blocks), 3)                       # trust the CA, the app, the accounts
+        self.assertIn("add-trusted-cert", local.blocks[0])
+        self.assertIn("installer -pkg", local.blocks[1])
+        self.assertNotIn(KEY_CN, local.blocks[1])
+        self.assertIn(KEY_CN, local.blocks[2])
         self.assertEqual((self.clip, self.shown), ([], []))           # nothing to paste, nothing shown
         self.assertFalse(any(KEY_CN in line or KEY_OVS in line for line in self.out))
         self.assertTrue(job.record()["here"])

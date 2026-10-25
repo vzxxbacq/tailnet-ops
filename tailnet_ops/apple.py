@@ -10,6 +10,7 @@
 - A Clash Verge extension script, so that Clash in TUN mode leaves the tailnet alone.
 """
 
+import hashlib
 import plistlib
 import shlex
 import ssl
@@ -21,6 +22,7 @@ from .privacy import CGNAT
 APP = "/Applications/Tailscale.app"
 APP_CLI = f"{APP}/Contents/MacOS/Tailscale"
 APP_DOMAIN = "io.tailscale.ipn.macsys"           # the standalone build's policy domain
+SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain"
 NETWORK_EXTENSION = "io.tailscale.ipn.macsys.network-extension"
 
 
@@ -117,26 +119,70 @@ def app_lines():
     ]
 
 
+def trust_lines(site, ca_pem):
+    """Shell lines that make macOS trust the site CA for TLS, system-wide, as the app's network
+    extension needs: the CA inside a profile alone is not enough. Skipped when it is trusted already."""
+    urls = " ".join(shlex.quote(r.server_url) for r in site.regions.values())
+    return [
+        f'trusted() {{ local u; for u in {urls}; do security verify-cert "$u" >/dev/null 2>&1 || return 1; done; }}',
+        'if trusted; then echo "macOS trusts the site CA"',
+        "else",
+        '  echo "Trusting the site CA for TLS in the System keychain; sudo and macOS ask for your password."',
+        "  ca=$(mktemp /tmp/tn-site-ca.XXXXXX)",
+        "  cat > \"$ca\" <<'TN_PEM'",
+        ca_pem.strip(),
+        "TN_PEM",
+        f'  sudo security add-trusted-cert -d -r trustRoot -p ssl -k {SYSTEM_KEYCHAIN} "$ca" '
+        '|| { rm -f "$ca"; echo "macOS did not trust the site CA"; exit 1; }',
+        '  rm -f "$ca"',
+        '  trusted || { echo "macOS still does not trust the login servers"; exit 1; }',
+        '  echo "macOS trusts the site CA"',
+        "fi",
+    ]
+
+
+def trust_block(site, ca_pem):
+    """Shell text that makes this Mac trust the site CA."""
+    return "\n".join(["/bin/bash <<'TN_EOF'", *trust_lines(site, ca_pem), "TN_EOF"]) + "\n"
+
+
+def untrust_command(ca_pem):
+    """The command that drops the site CA from the System keychain again."""
+    sha1 = hashlib.sha1(ssl.PEM_cert_to_DER_cert(ca_pem)).hexdigest().upper()
+    return f"sudo security delete-certificate -Z {sha1} {SYSTEM_KEYCHAIN}"
+
+
 def app_block():
     """Shell text that makes the Tailscale app ready on this Mac."""
     return "\n".join(["/bin/bash <<'TN_EOF'", *app_lines(), "TN_EOF"]) + "\n"
 
 
-def login_block(site, regions, keys, home):
-    """Shell text to paste into Terminal on the Mac: the app made ready (installed if missing), an
-    account per region, then the home region. keys: {region name: pre-auth key}. Accounts that are
-    there already are left alone."""
+def login_block(site, regions, keys, home, ca_pem=None):
+    """Shell text to paste into Terminal on the Mac: the site CA trusted (with ca_pem), the app made
+    ready (installed if missing), an account per region, then the home region. keys: {region name:
+    pre-auth key}. Accounts that are there already are left alone."""
     lines = [
         "/bin/bash <<'TN_EOF'",
+        *(trust_lines(site, ca_pem) if ca_pem else []),
         *app_lines(),
+        # Before logging in, say plainly why it cannot work: the CA not trusted yet, or no way through.
         "account() {",
-        '  if "$T" switch --list --json 2>/dev/null | grep -q "\\"nickname\\": \\"$1\\""; then echo "$1: already there"',
-        '  else "$T" login --login-server="$2" --nickname="$1" --auth-key="$3" --timeout=60s && echo "$1: joined"; fi',
+        '  if "$T" switch --list --json 2>/dev/null | grep -q "\\"nickname\\": \\"$1\\""; then echo "$1: already there"; return 0; fi',
+        '  if ! security verify-cert "$2" >/dev/null 2>&1; then',
+        '    if curl -sk --max-time 10 -o /dev/null "$2/health"; then',
+        '      echo "$1: macOS does not trust $2 yet. Run this again and let it trust the site CA."',
+        '    else echo "$1: this Mac cannot reach $2. Is Clash (TUN) or another VPN in the way?"; fi',
+        "    return 1",
+        "  fi",
+        '  echo "$1: logging in to $2 (up to 60 s)"',
+        '  if "$T" login --login-server="$2" --nickname="$1" --auth-key="$3" --timeout=60s; then echo "$1: joined"',
+        '  else echo "$1: did not join"; return 1; fi',
         "}",
+        "ok=yes",
     ]
     for r in regions:
-        lines.append(f"account {shlex.quote(r.name)} {shlex.quote(r.server_url)} {shlex.quote(keys[r.name])}")
-    lines += [f'"$T" switch {shlex.quote(home.name)}', "TN_EOF"]
+        lines.append(f"account {shlex.quote(r.name)} {shlex.quote(r.server_url)} {shlex.quote(keys[r.name])} || ok=no")
+    lines += [f'"$T" switch {shlex.quote(home.name)} >/dev/null 2>&1 || true', '[ "$ok" = yes ]', "TN_EOF"]
     return "\n".join(lines) + "\n"
 
 

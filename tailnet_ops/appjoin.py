@@ -102,6 +102,15 @@ class AppJoin(Procedure):
             raise StepError("not ready")
         self.out(f"    every control host answers; user {self.site.owner_user} is in every region")
 
+    def _untrust_hint(self):
+        ca = self.ca_pem or siteca.local(self.site)
+        if ca:
+            self.out(f"To drop the site CA from that Mac's System keychain too: {apple.untrust_command(ca)}")
+
+    def _run_trust(self):
+        if self.local.run(apple.trust_block(self.site, self._ca()), self.out) != 0:
+            raise StepError("macOS does not trust the site CA; see above")
+
     def _run_app(self):
         if self.local.run(apple.app_block(), self.out) != 0:
             raise StepError("the Tailscale app is not ready; see above")
@@ -133,7 +142,7 @@ class AppJoin(Procedure):
             if key is None:
                 raise StepError(f"{r.control_host} did not print a pre-auth key")
             keys[r.name] = key
-        block = apple.login_block(self.site, self.regions, keys, self.region)
+        block = apple.login_block(self.site, self.regions, keys, self.region, None if self.here else self._ca())
         self.out(f"    made a single-use, {pins.JOIN_CODE_EXPIRY} key in each region for user {self.site.owner_user}")
         if self.here:
             self.out("    adding an account for each region to the Tailscale app here; the keys are not shown or stored")
@@ -267,8 +276,18 @@ class AppJoin(Procedure):
                  brief="Write the Clash Verge script", undo_brief="delete the file"),
         ]
         if self.here:
+            # Trusted for TLS system-wide: the network extension does not take the CA from the profile.
+            steps.insert(2, Step(0, "Site CA",
+                                 ["Trust the site CA for TLS in the System keychain (security add-trusted-cert), "
+                                  "unless macOS trusts it",
+                                  "already. sudo and macOS ask for your password."],
+                                 [Action("local", "trust the CA", apple.trust_block(self.site, "<site CA>"))],
+                                 rollback_note=f"none automatic; to drop it: {apple.untrust_command(self._ca())}"
+                                 if self.ca_pem else "none automatic",
+                                 run=self._run_trust, brief="Trust the site CA (macOS asks)",
+                                 undo_brief="stays; tn prints how to drop it"))
             # After the profile, so the app reads its settings when it first starts.
-            steps.insert(2, Step(0, "Tailscale app",
+            steps.insert(3, Step(0, "Tailscale app",
                                  [f"Unless the app is in {apple.APP}: download Tailscale {pins.TAILSCALE_APP_VERSION}, the "
                                   "official package, check its pinned sha256",
                                   "and that Tailscale Inc. signed it, install it with sudo. Open the app and wait until "
@@ -278,7 +297,7 @@ class AppJoin(Procedure):
                                  rollback_note="none: the app stays (remove it like any app)", run=self._run_app,
                                  brief=f"Install and open the Tailscale app ({pins.TAILSCALE_APP_VERSION})",
                                  undo_brief="the app stays"))
-        local = {"Tailscale app", "Profile", "Clash Verge"}
+        local = {"Site CA", "Tailscale app", "Profile", "Clash Verge"}
         for number, s in enumerate(steps, 1):
             s.number = number
             s.host = "this machine" if s.title in local else controls
@@ -303,7 +322,8 @@ class AppJoin(Procedure):
         if self.here:
             self.out("\n== leaving every account in the Tailscale app here")
             self.local.run(block, self.out)
-            self.out("Remove the profile in System Settings → General → Device Management to drop the CA and settings.")
+            self.out("Remove the profile in System Settings → General → Device Management to drop the app's settings.")
+            self._untrust_hint()
             if self.forget:
                 self.forget(self)
             return
@@ -311,6 +331,7 @@ class AppJoin(Procedure):
         self.out("\nOn the Mac: remove the profile in System Settings → General → Device Management, and paste this"
                  + (" (on the clipboard)" if copied else "") + " to leave every account:")
         self.show("\n" + block)
+        self._untrust_hint()
         if self.forget:
             self.forget(self)
 
