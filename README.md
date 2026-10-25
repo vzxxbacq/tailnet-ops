@@ -7,6 +7,7 @@
 | [PLAN.md](PLAN.md) | 产品计划和第一阶段 |
 | [AGENTS.md](AGENTS.md) | 工作规则 |
 | [examples/site.example.toml](examples/site.example.toml) | 站点配置示例，用的是文档专用地址 |
+| [LICENSE](LICENSE) | MIT 许可证 |
 
 隐私保护：
 - 仓库里没有任何站点数据，`make check` 会拦截真实地址和密钥。
@@ -58,4 +59,29 @@
 
 站点目录默认 `~/.config/tailnet-ops/`，也可用 `--site DIR` 或 `TN_SITE`。加 `--redact` 后，输出里的地址、主机名和密钥会换成固定占位符，方便分享。
 
-当前状态：第一阶段（控制面）已完成，并在第一个站点的两个地区部署、验证通过。第二阶段（设备入网和专线）尚未开始。
+当前状态：控制面、设备入网（Linux 和 macOS 的命令行、Mac 上的 Tailscale App）、单向专线和跨区名字都已完成，并在一个两区站点上实际部署验证。个人设备按所在地点自动切换区还没有做。
+
+## English
+
+tailnet-ops (`tn`) sets up self-hosted [Headscale](https://github.com/juanfont/headscale) networks: one tailnet
+per region, joined by dedicated lines, including one-way lines where only one side may start connections.
+It is Python 3.11+ with the standard library only, and drives your hosts over SSH.
+
+- **Plans first.** Every command prints its steps and how each is undone; nothing changes until you type `yes`.
+  Rollback removes only what tailnet-ops made, then checks that nothing is left.
+- **Private by design.** Your site (addresses, host names, keys) lives in `~/.config/tailnet-ops/`, never in
+  the repository. Certificates come from a site CA of your own; no logs go to third parties. `make check`
+  blocks real addresses, keys and your host names in every file and in all history.
+- **Leaves your hosts alone.** It adds new services on free ports and never touches what already runs.
+
+| Command | What it does |
+| --- | --- |
+| `./tn init` | Writes `site.toml` from a few answers plus read-only SSH checks |
+| `./tn control plan\|apply\|verify\|rollback <region>` | Deploys Headscale (TLS from the site CA, embedded DERP and STUN) |
+| `./tn join` | Joins a machine, asking which Tailscale (the command line daemon, or the app), which OS, which machine, and how: a tagged server in one region, or your personal device in every region (one profile each) |
+| `./tn join plan\|apply\|verify\|rollback [host] [options]` | The same without questions; no host means this machine |
+| `./tn join apply <name> --app` | A Mac with the Tailscale app: a configuration profile to install and one block to paste; no SSH to it |
+| `./tn line plan\|apply\|verify\|rollback <line>` | A WireGuard line between two regions, with alias ranges, NAT and routes |
+| `./tn dns list\|sync` | One name per host in every region: `<host>.<region>.<suffix>` |
+
+Start with `examples/site.example.toml` or `./tn init`. Licensed under MIT.
