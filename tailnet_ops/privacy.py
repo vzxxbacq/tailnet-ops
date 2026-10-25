@@ -85,5 +85,6 @@ def unshareable_ipv6(text):
 
 
 def name_pattern(name):
-    """Match a host name as a whole token, so `cn-edge` does not match `edge`."""
-    return re.compile(r"(?<![A-Za-z0-9_.-])" + re.escape(name) + r"(?![A-Za-z0-9_-])", re.I)
+    """Match a host name as a whole token, so `cn-edge` does not match `edge`. A name right after
+    ':' is a qualifier, not a host (`mode="w:gz"`, `tag:edge`), and does not count."""
+    return re.compile(r"(?<![A-Za-z0-9_.:-])" + re.escape(name) + r"(?![A-Za-z0-9_-])", re.I)

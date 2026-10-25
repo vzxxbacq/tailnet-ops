@@ -42,6 +42,8 @@ class ScanTextTest(TempDirTest):
     def test_site_host_names(self):
         self.assertEqual(rules("ssh edge1 now", ["edge1"]), ["host name from the site directory"])
         self.assertEqual(rules("tag:cn-edge1 and edge12", ["edge1"]), [])
+        self.assertEqual(rules('tarfile.open(mode="w:edge9")', ["edge9"]), [])  # like mode="w:gz"
+        self.assertEqual(rules("then ssh edge9", ["edge9"]), ["host name from the site directory"])
 
     def test_blocked_paths(self):
         self.assertIsNotNone(guard.scan_path("x/site.toml"))
