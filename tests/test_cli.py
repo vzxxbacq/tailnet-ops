@@ -62,6 +62,15 @@ class CliTest(TempDirTest):
         rc, out, _err = run_cli("control", "plan", "ovs", "--full", "--site", str(self.site))
         self.assertIn("Step 8/8  Verify", out)
 
+    def test_line_list(self):
+        rc, out, err = run_cli("line", "list", "--site", str(self.site))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("Line", out)
+        self.assertIn("line1  cn-gateway → ovs-line (one-way)  203.0.113.30:11011  wg-line1 192.0.2.1 ⇄ 192.0.2.2", out)
+        rc, out, _err = run_cli("--redact", "line", "list", "--site", str(self.site))
+        self.assertNotIn("cn-gateway", out)
+        self.assertNotIn("203.0.113.30", out)
+
     def test_join_plan(self):
         rc, out, err = run_cli("join", "plan", "cn-probe", "--offline", "--site", str(self.site))
         self.assertEqual(rc, 0, err)

@@ -127,6 +127,29 @@ def cmd_line(args):
     return run_checked(args, "line", args.line, lambda site, runner, out: Line(site, args.line, runner=runner, out=out))
 
 
+def cmd_line_list(args):
+    site = load_site(args)
+    redact = Redactor(site) if args.redact else identity
+    if not site.lines:
+        print("No lines in site.toml. Add [[lines]] (see examples/site.example.toml) or run tn init.")
+        return 0
+    rows = [("Line", "Ends", "Entry", "Tunnel", "Keepalive", "Priority")]
+    for ln in sorted(site.lines, key=lambda ln: ln.priority):
+        ends = f"{ln.initiator} → {ln.responder}" + (" (one-way)" if ln.one_way else "")
+        entry = f"{ln.responder_entry_ipv4}:{ln.port}" if ln.port else f"{ln.responder_entry_ipv4} (no port)"
+        if ln.tunnel_ipv4:
+            i_ip, r_ip = ln.tunnel_addresses
+            tunnel = f"{ln.interface} {i_ip} ⇄ {r_ip}"
+        else:
+            tunnel = "not set"
+        rows.append((ln.name, ends, entry, tunnel, f"{ln.keepalive_seconds} s", str(ln.priority)))
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+    for r in rows:
+        print(redact("  " + "  ".join(cell.ljust(w) for cell, w in zip(r, widths)).rstrip()))
+    print(redact(f"\nPlan one with: tn line plan <line>"))
+    return 0
+
+
 def run_checked(args, kind, name, make):
     """plan (with read-only checks unless --offline), apply, verify and rollback for join and line."""
     site = load_site(args)
@@ -292,6 +315,8 @@ def build_parser():
 
     p = sub.add_parser("line", help="the WireGuard tunnel of a dedicated line")
     s = p.add_subparsers(dest="action", required=True)
+    c = s.add_parser("list", parents=[common], help="list the site's lines (reads site.toml only)")
+    c.set_defaults(func=cmd_line_list)
     for action, help_text in (
         ("plan", "check both ends (read-only), then print the steps and how each is undone"),
         ("apply", "make keys, start the tunnel on both ends; asks for yes"),
