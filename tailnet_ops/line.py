@@ -268,7 +268,6 @@ sysctl -q -w net.ipv4.ip_forward=1
 echo "turned on IPv4 forwarding ($SYSCTL)"
 """
     body += """systemctl daemon-reload
-systemctl enable --now "$KEEP.timer" >/dev/null 2>&1
 systemctl enable "wg-quick@$IFACE" >/dev/null 2>&1
 if systemctl is-active --quiet "wg-quick@$IFACE"; then
   if [ "$changed" = yes ]; then systemctl restart "wg-quick@$IFACE"; echo "restarted wg-quick@$IFACE"; fi
@@ -276,6 +275,8 @@ else
   systemctl start "wg-quick@$IFACE"
   echo "started wg-quick@$IFACE"
 fi
+# Only once the tunnel is up: the timer keeps its accept rules in place from now on.
+systemctl enable --now "$KEEP.timer" >/dev/null 2>&1
 "$ALLOW" add
 "$ALLOW" check && echo "accept rules in place"
 nft list table inet "$TABLE" >/dev/null && echo "NAT table $TABLE loaded"
