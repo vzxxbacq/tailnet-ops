@@ -103,16 +103,22 @@ class Names:
             self._on_control(r, write(recs), echo=True)
 
     def table(self):
-        """Every name, as each region resolves it."""
-        nodes, planned = self.plan()
+        """Every host, as each region resolves it: the name with its region, and the short name."""
+        _nodes, planned = self.plan()
         rows = []
         for name, r in self.site.regions.items():
-            for n in nodes.get(name, []):
-                ip = node_ipv4(n, r)
-                if ip:
-                    rows.append((name, f"{str(n.get('given_name', '')).lower()}.{r.base_domain}", ip, "this region"))
             net = ipaddress.ip_network(r.ipv4_prefix)
+            by_value = {}
             for rec in planned[name][0]:
-                here = ipaddress.ip_address(rec["value"]) in net
-                rows.append((name, rec["name"], rec["value"], "this region" if here else "through a line"))
+                by_value.setdefault(rec["value"], []).append(rec["name"])
+            for value, recs in sorted(by_value.items(), key=lambda kv: sorted(kv[1])[0]):
+                long = [x for x in recs if x.count(".") >= 2 + r.base_domain.count(".")]
+                here = ipaddress.ip_address(value) in net
+                for full in sorted(long):
+                    host = full.split(".", 1)[0]
+                    # A local host's short name comes from MagicDNS itself; a remote one's from a record,
+                    # which is left out when it clashes with a local host.
+                    short = here or f"{host}.{r.base_domain}" in recs
+                    rows.append((name, full, f"{host}, {host}.{r.base_domain}" if short else "—", value,
+                                 "this region" if here else "through a line"))
         return rows

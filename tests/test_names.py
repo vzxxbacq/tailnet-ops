@@ -48,6 +48,16 @@ class NamesTest(TempDirTest):
         writes = [(c[1], c[2]) for c in runner.calls if "extra-records.json.tn-new" in c[2]]
         self.assertEqual([h for h, _ in writes], ["cn-control", "ovs-control"])
 
+    def test_table(self):
+        runner = FakeRunner()
+        n = names.Names(self.site, runner, out=lambda s: None)
+        n.nodes = lambda: self.nodes
+        rows = {(r[0], r[1]): r for r in n.table()}
+        self.assertEqual(rows[("cn", "ovs-line.ovs.tailnet.internal")][2:],
+                         ("ovs-line, ovs-line.tailnet.internal", "10.255.2.4", "through a line"))
+        self.assertEqual(rows[("cn", "cn-gateway.cn.tailnet.internal")][3:], ("100.64.1.2", "this region"))
+        self.assertEqual(rows[("cn", "shared.ovs.tailnet.internal")][2], "—")   # its short name is cn's own host
+
     def test_suffixes(self):
         from tailnet_ops.site import suffix_problem
         for ok in ("vlan", "vlan.internal", "tailnet.internal"):

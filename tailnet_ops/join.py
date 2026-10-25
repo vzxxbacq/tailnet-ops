@@ -775,7 +775,7 @@ class Join(Procedure):
         nf = self.netfilter_mode or "on (tailscaled adds its own rules)"
         out = [
             f"{a} → region {r.name} ({self.region_reason()}): tailnet {r.ipv4_prefix}, "
-            f"name {dns_label(a)}.{r.base_domain}",
+            f"name {self.fqdn}",
             f"  login server  {r.server_url}"
             + mark(facts.get("login") == "ok", f"{a} reaches it over TLS", f"{a} cannot reach it"),
             f"  tags          {', '.join(self.tags)}",
@@ -801,7 +801,7 @@ class Join(Procedure):
         nf = self.netfilter_mode or "on (tailscaled adds its own rules)"
         routes = self._routes_text()
         return "\n".join([
-            f"{a} joins region {r.name} as {dns_label(a)}.{r.base_domain} (Tailscale {pins.TAILSCALE_VERSION})",
+            f"{a} joins region {r.name} as {self.fqdn} (Tailscale {pins.TAILSCALE_VERSION})",
             f"  login server  {r.server_url} (Headscale on {self.control})",
             f"  tags          {', '.join(self.tags)}",
             f"  tailscaled    udp/{self.port}, no log upload",
@@ -821,8 +821,14 @@ class Join(Procedure):
     def rollback_footer(self):
         return "It keeps the download cache on this machine."
 
+    @property
+    def fqdn(self):
+        """The name tn shows: with the region; the short <name>.<suffix> works too."""
+        return f"{dns_label(self.alias)}.{self.region.name}.{self.region.base_domain}"
+
     def done_message(self):
-        return f"{self.alias} joined region {self.region.name} as {dns_label(self.alias)}.{self.region.base_domain}."
+        return (f"{self.alias} joined region {self.region.name} as {self.fqdn} "
+                f"(also {dns_label(self.alias)}.{self.region.base_domain} and {dns_label(self.alias)}).")
 
     def rolled_back_message(self):
         return (f"Rolled back the join of {self.alias}. Kept on purpose: the download cache and run logs on this "

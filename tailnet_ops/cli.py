@@ -158,12 +158,12 @@ def cmd_dns(args):
     redact = Redactor(site) if args.redact else identity
     names = Names(site, remote.SSHRunner(out=lambda s: print(redact(s))), out=lambda s: print(redact(s)))
     if args.action == "list":
-        rows = [("Region", "Name", "Address", "How")] + names.table()
+        rows = [("Region", "Name", "Short forms", "Address", "How")] + names.table()
         rows = [tuple(redact(c) for c in r) for r in rows]
-        widths = [max(len(r[i]) for r in rows) for i in range(4)]
+        widths = [max(len(r[i]) for r in rows) for i in range(5)]
         for r in rows:
             print("  " + "  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
-        print("\nShort names work too on devices that use MagicDNS: ping <name>")
+        print("\nOn devices that use MagicDNS every form works: ping <host>.<region>, <host>.<suffix>, <host>")
         return 0
     _nodes, planned = names.plan()
     for region, (recs, skipped) in planned.items():
