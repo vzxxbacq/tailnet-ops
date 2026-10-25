@@ -33,6 +33,11 @@ class Redactor:
             self.names.setdefault(line.name, f"<line{i}>")
             self.ips.setdefault(line.responder_entry_ipv4, f"<line{i}-entry-ip>")
             self.ips.setdefault(line.initiator_public_ipv4, f"<line{i}-initiator-ip>")
+            # Derived names carry the line name joined by '-', which whole-token matching skips.
+            self.names.setdefault(line.interface, f"wg-<line{i}>")
+            if line.tunnel_ipv4:
+                for end, ip in zip(("initiator", "responder"), line.tunnel_addresses):
+                    self.ips.setdefault(ip, f"<line{i}-tunnel-{end}>")
         for i, alias in enumerate(site.host_settings, 1):
             self.names.setdefault(alias, f"<host{i}>")
         self.ips = {

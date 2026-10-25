@@ -97,7 +97,8 @@ def show_plan(procedure, console, full, checks=None):
     text, _digest = procedure.plan_text()
     console.log(text)
     console.show(text if full else procedure.summary_text(checks))
-    console.out(f"Full plan saved to {console.log_path}. Nothing was changed.")
+    saved = "in the site's runs/ directory" if console.redact is not identity else f"to {console.log_path}"
+    console.out(f"Full plan saved {saved}. Nothing was changed.")
     return 0
 
 
@@ -143,9 +144,10 @@ def cmd_line_list(args):
         else:
             tunnel = "not set"
         rows.append((ln.name, ends, entry, tunnel, f"{ln.keepalive_seconds} s", str(ln.priority)))
+    rows = [tuple(redact(cell) for cell in r) for r in rows]
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     for r in rows:
-        print(redact("  " + "  ".join(cell.ljust(w) for cell, w in zip(r, widths)).rstrip()))
+        print("  " + "  ".join(cell.ljust(w) for cell, w in zip(r, widths)).rstrip())
     print(redact(f"\nPlan one with: tn line plan <line>"))
     return 0
 

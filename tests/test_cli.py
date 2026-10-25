@@ -70,6 +70,19 @@ class CliTest(TempDirTest):
         rc, out, _err = run_cli("--redact", "line", "list", "--site", str(self.site))
         self.assertNotIn("cn-gateway", out)
         self.assertNotIn("203.0.113.30", out)
+        header, row = out.splitlines()[:2]
+        self.assertEqual(header.index("Entry"), row.index("<line1-entry-ip>"))
+
+    def test_redacted_output_has_no_site_names(self):
+        hosts = ("cn-control", "cn-probe", "ovs-control", "ovs-probe", "cn-gateway", "ovs-line", "line1")
+        for argv in (("control", "plan", "cn"), ("join", "plan", "cn-probe", "--offline"),
+                     ("line", "plan", "line1", "--offline"), ("line", "list"), ("site", "check")):
+            with self.subTest(argv=argv):
+                rc, out, err = run_cli("--redact", *argv, "--site", str(self.site))
+                self.assertEqual(rc, 0, err)
+                for host in hosts:
+                    self.assertNotRegex(out, rf"(?<![\w<:-]){host}(?![\w>])", f"{host} in {argv}")
+                self.assertNotIn("wg-line1", out)
 
     def test_join_plan(self):
         rc, out, err = run_cli("join", "plan", "cn-probe", "--offline", "--site", str(self.site))
