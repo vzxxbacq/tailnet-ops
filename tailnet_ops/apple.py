@@ -157,17 +157,23 @@ def app_block():
     return "\n".join(["/bin/bash <<'TN_EOF'", *app_lines(), "TN_EOF"]) + "\n"
 
 
-def login_block(site, regions, keys, home, ca_pem=None):
+def login_block(site, regions, keys, home, ca_pem=None, label="air"):
     """Shell text to paste into Terminal on the Mac: the site CA trusted (with ca_pem), the app made
-    ready (installed if missing), an account per region, then the home region. keys: {region name:
-    pre-auth key}. Accounts that are there already are left alone."""
+    ready (installed if missing), an account per region named label, then the home region. keys:
+    {region name: pre-auth key}. An account that is there already keeps its key and gets the same
+    name and settings. The settings are passed on the command line: the profile's policies may not
+    have taken."""
     lines = [
         "/bin/bash <<'TN_EOF'",
         *(trust_lines(site, ca_pem) if ca_pem else []),
         *app_lines(),
         # Before logging in, say plainly why it cannot work: the CA not trusted yet, or no way through.
         "account() {",
-        '  if "$T" switch --list --json 2>/dev/null | grep -q "\\"nickname\\": \\"$1\\""; then echo "$1: already there"; return 0; fi',
+        '  if "$T" switch --list --json 2>/dev/null | grep -q "\\"nickname\\": \\"$1\\""; then',
+        '    "$T" switch "$1" >/dev/null 2>&1 && "$T" set --hostname="$4" --accept-routes=true --accept-dns=true '
+        '&& echo "$1: already there; name and settings set" && return 0',
+        '    echo "$1: already there, but its settings could not be set"; return 1',
+        "  fi",
         '  if ! security verify-cert "$2" >/dev/null 2>&1; then',
         '    if curl -sk --max-time 10 -o /dev/null "$2/health"; then',
         '      echo "$1: macOS does not trust $2 yet. Run this again and let it trust the site CA."',
@@ -175,13 +181,15 @@ def login_block(site, regions, keys, home, ca_pem=None):
         "    return 1",
         "  fi",
         '  echo "$1: logging in to $2 (up to 60 s)"',
-        '  if "$T" login --login-server="$2" --nickname="$1" --auth-key="$3" --timeout=60s; then echo "$1: joined"',
+        '  if "$T" login --login-server="$2" --nickname="$1" --hostname="$4" --accept-routes=true --accept-dns=true \\',
+        '       --auth-key="$3" --timeout=60s; then echo "$1: joined"',
         '  else echo "$1: did not join"; return 1; fi',
         "}",
         "ok=yes",
     ]
     for r in regions:
-        lines.append(f"account {shlex.quote(r.name)} {shlex.quote(r.server_url)} {shlex.quote(keys[r.name])} || ok=no")
+        lines.append(f"account {shlex.quote(r.name)} {shlex.quote(r.server_url)} {shlex.quote(keys[r.name])} "
+                     f"{shlex.quote(label)} || ok=no")
     lines += [f'"$T" switch {shlex.quote(home.name)} >/dev/null 2>&1 || true', '[ "$ok" = yes ]', "TN_EOF"]
     return "\n".join(lines) + "\n"
 

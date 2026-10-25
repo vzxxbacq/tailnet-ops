@@ -68,7 +68,16 @@ class AppJoin(Procedure):
         return join._json(self._on_control(region, join.NODES_JSON).output or "[]", "headscale nodes list") or []
 
     def _mine(self, nodes):
-        return [n for n in nodes if str(n.get("given_name", "")).lower() == self.label]
+        """The Mac's nodes: named label, or reporting label as its host name (before a rename)."""
+        return [n for n in nodes if self.label in (str(n.get("given_name", "")).lower(),
+                                                   dns_label(str(n.get("name", ""))))]
+
+    def _name_it(self, region, node):
+        """Give a node the chosen name in Headscale when it came up under another one."""
+        if str(node.get("given_name", "")).lower() == self.label:
+            return
+        self.out(f"    {region.name}: renaming {node.get('given_name')} to {self.label}")
+        self._on_control(region, f'"$BIN" nodes rename -i {int(node.get("id"))} {self.label}\n', echo=True)
 
     def check(self):
         """Read-only: every control host answers as root and has the owner's Headscale user."""
@@ -142,7 +151,8 @@ class AppJoin(Procedure):
             if key is None:
                 raise StepError(f"{r.control_host} did not print a pre-auth key")
             keys[r.name] = key
-        block = apple.login_block(self.site, self.regions, keys, self.region, None if self.here else self._ca())
+        block = apple.login_block(self.site, self.regions, keys, self.region, None if self.here else self._ca(),
+                                  self.label)
         self.out(f"    made a single-use, {pins.JOIN_CODE_EXPIRY} key in each region for user {self.site.owner_user}")
         if self.here:
             self.out("    adding an account for each region to the Tailscale app here; the keys are not shown or stored")
@@ -163,8 +173,10 @@ class AppJoin(Procedure):
                  f"`tn join verify {self.name}` checks later)")
         while waiting:
             for r in self.regions:
-                if r.name in waiting and self._mine(self._nodes(r)):
+                mine = self._mine(self._nodes(r)) if r.name in waiting else []
+                if mine:
                     waiting.discard(r.name)
+                    self._name_it(r, mine[0])
                     self.out(f"    ✓ {r.name}: {self.label} joined")
             if not waiting:
                 break
@@ -250,7 +262,7 @@ class AppJoin(Procedure):
                          join.user_key("<user id>", pins.JOIN_CODE_EXPIRY), "control", True),
                   Action("you", "paste on the Mac", apple.login_block(self.site, self.regions,
                                                                      {r.name: "<key>" for r in self.regions},
-                                                                     self.region))],
+                                                                     self.region, None, self.label))],
                  rollback="(each control host) delete the Mac's nodes and its used or expired keys",
                  rollback_note=f"delete the node named {self.label} in every region and its used or expired keys",
                  run=self._run_accounts, undo=self._undo_accounts, brief=f"Make the accounts for {regions}",

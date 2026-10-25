@@ -85,11 +85,13 @@ class FilesTest(TempDirTest):
         p = run_bash(block.split("\n", 1)[1].rsplit("TN_EOF", 1)[0],
                      env={**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}", "CALLS": str(log)})
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("cn: already there", p.stdout)
+        self.assertIn("cn: already there; name and settings set", p.stdout)
         self.assertIn("ovs: joined", p.stdout)
         calls = log.read_text()
         self.assertNotIn(KEY_CN, calls)                                # cn was there: its key is not used
-        self.assertIn(f"login --login-server=https://203.0.113.20:9443 --nickname=ovs --auth-key={KEY_OVS}", calls)
+        self.assertIn("switch cn\nset --hostname=air --accept-routes=true --accept-dns=true", calls)
+        self.assertIn("login --login-server=https://203.0.113.20:9443 --nickname=ovs --hostname=air "
+                      f"--accept-routes=true --accept-dns=true --auth-key={KEY_OVS}", calls)
         self.assertTrue(calls.rstrip().endswith("switch cn"))
 
     def test_clash_script(self):
@@ -276,6 +278,15 @@ class AppJoinTest(TempDirTest):
         self.assertTrue((self.site.directory / "out" / "air-clash-verge.js").exists())
         self.assertIn("    verify passed; on the Mac, switch region in the Tailscale menu: ovs, cn", self.out)
         self.assertEqual(job.record()["region"], "ovs")
+
+    def test_wait_names_a_node_that_came_up_under_its_host_name(self):
+        nodes = [{"id": 9, "given_name": "owners-macbook-air", "name": "air"}]
+        runner = Runner(AppJoinTest.responses(nodes))
+        self.job(runner)._run_wait()
+        renames = [(c[1], line.strip()) for c in runner.calls for line in c[2].splitlines() if "nodes rename" in line]
+        self.assertEqual(renames, [("cn-control", '"$BIN" nodes rename -i 9 air'),
+                                   ("ovs-control", '"$BIN" nodes rename -i 9 air')])
+        self.assertIn("    cn: renaming owners-macbook-air to air", self.out)
 
     def test_wait_gives_up(self):
         job = self.job(Runner(AppJoinTest.responses(nodes=[])))
