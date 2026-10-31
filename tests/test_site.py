@@ -83,7 +83,7 @@ class SiteFileTest(TempDirTest):
 
     def test_optional_ports(self):
         text = example_text(("stun_port = 3478", "stun_port = 3478\nmetrics_port = 9443"))
-        self.assertIn("port, metrics_port and grpc_port must differ", self.problems(text))
+        self.assertIn("port, metrics_port, grpc_port and agent_port must differ", self.problems(text))
 
 
 class SiteDirTest(TempDirTest):

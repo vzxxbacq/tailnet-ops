@@ -27,6 +27,7 @@ SECRET_PATTERNS = (
     ("private key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----")),
     ("Headscale key", re.compile(r"\bhskey-(?:auth|api)-[A-Za-z0-9_-]{8,}")),
     ("Tailscale key", re.compile(r"\btskey-[a-z]+-[A-Za-z0-9_-]{8,}")),
+    ("tn-agent MCP token", re.compile(r"\btna_[A-Za-z0-9_-]{40,}")),
     ("Tailscale private key", re.compile(r"\b(?:privkey|nlpriv):[0-9a-f]{64}\b")),
     ("legacy Headscale pre-auth key", re.compile(r"(?<![0-9A-Fa-f])[0-9a-f]{48}(?![0-9A-Fa-f])")),
     ("WireGuard private key", re.compile(r"(?i)\bPrivateKey\s*=\s*[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=")),

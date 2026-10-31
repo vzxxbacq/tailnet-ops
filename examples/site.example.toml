@@ -12,6 +12,13 @@ dns_suffix = "tailnet.internal"    # every host is <name>.<suffix> in every regi
 control_host = "cn-control"        # SSH alias of the machine that runs Headscale
 check_from = "cn-probe"            # another host in the region, for external checks
 public_ipv4 = "198.51.100.10"      # how clients reach the control plane
+# domain = "hs-cn.example.com"    # optional: the login server by name, with a Let's Encrypt certificate that
+                                   # every device trusts (no site CA to install). acme.sh proves the name with
+                                   # a DNS-01 TXT record through the Cloudflare API: point an A record here,
+                                   # DNS only (not proxied); tn control apply asks for an API token once
+# agent_domain = "agent-cn.example.com"  # optional, needs domain: tn-agent (MCP for Agents, passkey approvals)
+                                   # behind a Cloudflare tunnel; tn agent apply makes the tunnel and record
+# agent_port = 18480              # optional: tn-agent's port on the control host's loopback (the default)
 listen_ipv4 = "0.0.0.0"            # address Headscale binds; a specific IP on multi-address hosts
 port = 9443
 stun_port = 3478

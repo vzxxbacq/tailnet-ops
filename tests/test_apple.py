@@ -68,7 +68,8 @@ class FilesTest(TempDirTest):
         p = subprocess.run([bash(), "-n"], input=with_ca, capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
 
-    def test_login_block_runs_and_skips_existing_accounts(self):
+    def run_login_block(self, prefs_url):
+        """The block with a stub app CLI that already has a cn account, logged in to prefs_url."""
         stubs = self.tmp / "stubs"
         stubs.mkdir()
         log = self.tmp / "calls"
@@ -76,23 +77,38 @@ class FilesTest(TempDirTest):
         (stubs / "security").write_text("#!/bin/sh\nexit 0\n")         # the CA is trusted
         (stubs / "Tailscale").write_text(
             '#!/bin/sh\necho "$*" >> "$CALLS"\n'
-            'case "$1" in switch) [ "$2" = --list ] && echo \'[{"nickname": "cn"}]\' ;; esac\nexit 0\n')
+            'case "$1" in\n'
+            '  switch) [ "$2" = --list ] && echo \'[{"nickname": "cn"}]\' ;;\n'
+            '  debug) printf \'{\\n\\t"ControlURL": "%s"\\n}\\n\' "$PREFS_URL" ;;\n'
+            'esac\nexit 0\n')
         for f in stubs.iterdir():
             f.chmod(0o755)
         regions = list(self.site.regions.values())
         block = apple.login_block(self.site, regions, {"cn": KEY_CN, "ovs": KEY_OVS}, regions[0])
         block = block.replace(f"T={apple.APP_CLI}", f"T={stubs}/Tailscale")
         p = run_bash(block.split("\n", 1)[1].rsplit("TN_EOF", 1)[0],
-                     env={**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}", "CALLS": str(log)})
+                     env={**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}", "CALLS": str(log),
+                          "PREFS_URL": prefs_url})
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("cn: already there; name and settings set", p.stdout)
-        self.assertIn("ovs: joined", p.stdout)
-        calls = log.read_text()
+        return p.stdout, log.read_text()
+
+    def test_login_block_runs_and_skips_existing_accounts(self):
+        out, calls = self.run_login_block(self.site.regions["cn"].server_url)
+        self.assertIn("cn: already there; name and settings set", out)
+        self.assertIn("ovs: joined", out)
         self.assertNotIn(KEY_CN, calls)                                # cn was there: its key is not used
-        self.assertIn("switch cn\nset --hostname=air --accept-routes=true --accept-dns=true", calls)
+        self.assertIn("switch cn\ndebug prefs\nset --hostname=air --accept-routes=true --accept-dns=true", calls)
         self.assertIn("login --login-server=https://203.0.113.20:9443 --nickname=ovs --hostname=air "
                       f"--accept-routes=true --accept-dns=true --auth-key={KEY_OVS}", calls)
         self.assertTrue(calls.rstrip().endswith("switch cn"))
+
+    def test_login_block_moves_an_account_to_a_new_login_server(self):
+        out, calls = self.run_login_block("https://192.0.2.99:9443")
+        self.assertIn("cn: moving to https://198.51.100.10:9443", out)
+        self.assertIn("cn: moved", out)
+        self.assertIn("up --login-server=https://198.51.100.10:9443 --force-reauth --hostname=air "
+                      f"--accept-routes=true --accept-dns=true --auth-key={KEY_CN}", calls)
+        self.assertNotIn("set --hostname", calls)
 
     def test_clash_script(self):
         js = apple.clash_script(self.site)

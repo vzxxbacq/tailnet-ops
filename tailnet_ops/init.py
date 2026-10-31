@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from . import pins
 from .privacy import CGNAT
-from .site import HOST_RE, REGION_NAME_RE, TAILSCALE_RESERVED, USER_RE, suffix_problem
+from .site import DNS_RE, HOST_RE, REGION_NAME_RE, TAILSCALE_RESERVED, USER_RE, suffix_problem
 
 # Read-only. Runs as the SSH login user.
 FACTS_SCRIPT = r"""set -u
@@ -149,6 +149,10 @@ def _check_user(a):
     return None if USER_RE.match(a) else "use lower-case letters, digits, '.', '_' or '-'"
 
 
+def _check_domain(a):
+    return None if not a or DNS_RE.match(a) else "a DNS name like hs-cn.example.com"
+
+
 def _check_ipv4(a):
     try:
         ipaddress.IPv4Address(a)
@@ -182,6 +186,10 @@ def ask_answers(asker):
                 f"  {name}: ports the provider lets in to the control host, 3 in this order: HTTPS and the relay "
                 "(TCP), STUN (UDP), the host's own Tailscale (UDP); e.g. 20000-20002; empty if any port can be opened",
                 None, _check_ports, allow_empty=True)),
+            "domain": asker.ask(
+                f"  {name}: login server domain, for a Let's Encrypt certificate (its DNS on Cloudflare), e.g. "
+                f"hs-{name}.example.com; empty: the public IP and a site CA that every device must trust",
+                None, _check_domain, allow_empty=True),
         })
     while True:
         n = len(a["lines"]) + 1
@@ -356,6 +364,10 @@ def derive(answers, facts, hostnames):
             "official_derp": bool(ra["official_derp"]),
             "tags": tags,
         }
+        if ra.get("domain"):
+            region["domain"] = ra["domain"]
+            comments[(table, "domain")] = (f"Let's Encrypt via Cloudflare DNS; its A record -> {public}, "
+                                           "DNS only (not proxied)")
         if metrics != pins.DEFAULT_METRICS_PORT:
             region["metrics_port"] = metrics
         if grpc != pins.DEFAULT_GRPC_PORT:

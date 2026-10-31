@@ -1,6 +1,7 @@
 """`tn control`: deploy Headscale for one region, step by step."""
 
-from . import VERSION, entry, names, pins, pki, render, scripts
+from . import VERSION, acme, entry, names, pins, pki, render, scripts
+from .cloudflare import Cloudflare, CloudflareError, in_the_way
 from .procedure import Action, Procedure, Step, StepError, fetch_pinned
 from .site import ensure_private_dir, write_private
 
@@ -8,6 +9,8 @@ CA_PLACEHOLDER = "<site CA certificate from pki/ca.crt; created in step 4 if mis
 CERT_PLACEHOLDER = "<server certificate signed on this machine in step 4>"
 
 __all__ = ["CA_PLACEHOLDER", "CERT_PLACEHOLDER", "Deployment", "LocalOps", "StepError"]
+
+PERMISSIONS = "Zone · Zone · Read and Zone · DNS · Edit on the domain's zone"
 
 
 class LocalOps:
@@ -21,6 +24,13 @@ class LocalOps:
         cache = ensure_private_dir(self.site.cache_dir)
         return fetch_pinned(pins.headscale_url(arch), cache / pins.headscale_asset(arch),
                             pins.HEADSCALE_SHA256[arch], self.out)
+
+    def acme_files(self):
+        """{name in the staging directory: path} for the pinned acme.sh files, downloaded once."""
+        folder = ensure_private_dir(self.site.cache_dir / f"acme.sh-{pins.ACME_SH_VERSION}")
+        return {acme.staged_name(path): fetch_pinned(pins.acme_url(path), folder / acme.staged_name(path), want,
+                                                     self.out)
+                for path, want in pins.ACME_SH_SHA256.items()}
 
     def ensure_ca(self):
         created, pem = pki.ensure_ca(self.site.pki_dir, self.site.name)
@@ -46,7 +56,7 @@ class LocalOps:
 
 class Deployment(Procedure):
     command = "control"
-    errors = Procedure.errors + (pki.PKIError,)
+    errors = Procedure.errors + (pki.PKIError, CloudflareError)
 
     def __init__(self, site, region_name, runner=None, ops=None, out=print, ssh_view=None):
         self.site = site
@@ -61,6 +71,10 @@ class Deployment(Procedure):
         self.facts = {}
         self.names = names.Names(site, runner, out, ssh_view=ssh_view)
         self.entry_found = None  # the firewall chains that would drop phone traffic, from the entry's checks
+        self.ask_token = None    # set by the CLI: (quiet) -> a Cloudflare API token, or None; quiet: do not prompt
+        self._token = None
+        self.cloudflare = Cloudflare
+        self.dns_mark = f"tailnet-ops region={self.region.name}"   # the comment on the A record tn makes
 
     # --- running ------------------------------------------------------------
 
@@ -72,8 +86,59 @@ class Deployment(Procedure):
         script = scripts.wrap(self.checker_prelude, body)
         return self.runner.run(self.region.check_from, script, privileged=False)
 
+    def token(self, ask=True):
+        """The Cloudflare API token: from $CF_Token, else asked for once (not when ask is False)."""
+        if self._token is None and self.ask_token:
+            self._token = self.ask_token(quiet=not ask) or None
+        return self._token
+
+    def _cloudflare(self, ask=True):
+        token = self.token(ask)
+        if not token:
+            raise StepError(f"needs a Cloudflare API token ({PERMISSIONS}): run this in a terminal to paste it, "
+                            "or set CF_Token")
+        cf = self.cloudflare(token)
+        return cf, cf.zone_for(self.region.domain)
+
+    def _dns_check(self):
+        """How the host's preflight treats the domain: "check" it when Cloudflare has the A record as wanted;
+        "skip" it when step 4 makes or fixes the record (a lookup now would leave the old answer cached);
+        "soft" (look, but do not fail) when there is no token to ask Cloudflare."""
+        r = self.region
+        if not self.token(ask=False):
+            return "soft"
+        cf, zone = self._cloudflare(ask=False)
+        state, rec, _found = cf.record_state(zone, r.domain, "A", r.public_ipv4, False, self.dns_mark)
+        if state == "foreign":
+            raise StepError("Cloudflare: " + in_the_way(rec, r.domain, "A", r.public_ipv4, False))
+        if state == "ok":
+            self.out(f"  ok    Cloudflare: {r.domain} A {r.public_ipv4}, DNS only")
+            return "check"
+        self.out(f"  note  Cloudflare: step 4 {'makes' if state == 'absent' else 'fixes'} {r.domain} A "
+                 f"{r.public_ipv4}, DNS only, in zone {zone['name']}")
+        return "skip"
+
     def _run_preflight(self):
-        self.facts.update(self._control(scripts.PREFLIGHT).facts())
+        args = [] if self.region.site_ca else [self._dns_check()]
+        self.facts.update(self._control(scripts.PREFLIGHT, args=args).facts())
+
+    def _run_dns(self):
+        r = self.region
+        if self.facts.get("dns") == "ok" and not self.token(ask=False):
+            self.out(f"    {r.domain} resolves to {r.public_ipv4} already; no Cloudflare token needed for it")
+            return
+        cf, zone = self._cloudflare()
+        done = cf.ensure_record(zone, r.domain, "A", r.public_ipv4, False, self.dns_mark)
+        self.out(f"    Cloudflare: {r.domain} A {r.public_ipv4}, DNS only: {done}")
+
+    def _undo_letsencrypt(self):
+        self._control(scripts.ROLLBACK_CERT)
+        if not self.token(ask=False):
+            self.out(f"    no Cloudflare token: the A record {self.region.domain} stays; delete it there if you want")
+            return
+        cf, zone = self._cloudflare()
+        gone = cf.delete_record(zone, self.region.domain, self.dns_mark)
+        self.out(f"    Cloudflare: deleted {gone} record(s) {self.region.domain} made by tailnet-ops")
 
     def _run_binary(self):
         arch = self.facts.get("arch")
@@ -95,6 +160,9 @@ class Deployment(Procedure):
         self._control(scripts.USER_AND_DIRS)
 
     def _run_cert(self):
+        if not self.region.site_ca:
+            self._run_letsencrypt()
+            return
         result = self._control(scripts.KEY_AND_CSR)
         csr = result.block("csr")
         if not csr:
@@ -104,6 +172,33 @@ class Deployment(Procedure):
             self.out("    the installed certificate is current; kept it")
             return
         self._control(scripts.install_cert(pem, self.ops.ensure_ca()))
+
+    def _run_letsencrypt(self):
+        host = self.region.control_host
+        self._run_dns()
+        facts = self._control(acme.STATE).facts()
+        want = {acme.staged_name(p): s for p, s in pins.ACME_SH_SHA256.items()}
+        if (facts.get("acme_sh"), facts.get("dns_cf")) == (want["acme.sh"], want["dns_cf.sh"]):
+            self.out(f"    acme.sh {pins.ACME_SH_VERSION} is already installed")
+        else:
+            files = self.ops.acme_files()
+            stage = self._control(acme.STAGE, privileged=False).facts().get("stage", "")
+            if not stage.startswith("/tmp/tn-acme."):
+                raise StepError(f"unexpected staging directory {stage!r}")
+            for name, path in files.items():
+                self.out(f"    uploading {name} to {stage}/")
+                self.runner.upload(host, path, f"{stage}/{name}")
+            self._control(acme.install(), args=[stage])
+        if facts.get("token") == "yes":
+            self.out(f"    {host} has the Cloudflare API token already")
+        else:
+            token = self.token()
+            if not token:
+                raise StepError(f"needs a Cloudflare API token ({PERMISSIONS}): run tn control apply in a terminal "
+                                "to paste it, or set CF_Token")
+            self.out(f"    the token goes to {acme.TOKEN_FILE} on {host} over SSH stdin; it is not logged or kept here")
+            self.runner.feed(host, acme.save_token_argv(), token, what="the Cloudflare API token")
+        self._control(acme.issue(self.region))
 
     def _run_config(self):
         self._control(self.configuration_body())
@@ -149,6 +244,9 @@ class Deployment(Procedure):
         return entry.start(self.site, self.region, found or {}, forward)
 
     def _run_verify(self):
+        if not self.region.site_ca:
+            self._checker(scripts.verify())
+            return
         ca = self.ops.ca_pem()
         if ca is None:
             raise StepError(f"no site CA in {self.site.pki_dir}; run `tn control apply {self.region.name}` first")
@@ -162,7 +260,6 @@ class Deployment(Procedure):
     def steps(self):
         r = self.region
         host, checker = r.control_host, r.check_from
-        sans = ", ".join(f"IP:{ip}" for ip in r.cert_ips)
         arch_note = "the architecture preflight reports (amd64 or arm64)"
         steps = [
             Step(
@@ -198,22 +295,7 @@ class Deployment(Procedure):
                 run=self._run_user_and_dirs, brief="Create user headscale and its directories",
                 undo_brief="remove them, the database and the user",
             ),
-            Step(
-                4, "Certificate",
-                ["Make the server key and CSR on the host (the key never leaves it). Sign the CSR here",
-                 f"with the site CA (created now if missing): SAN {sans}, EKU serverAuth,",
-                 f"{pins.SERVER_CERT_DAYS} days. Install the certificate and the CA certificate.",
-                 "A current certificate for the same key and SANs is kept."],
-                [
-                    Action(host, "key and CSR; prints the CSR and any current certificate", scripts.KEY_AND_CSR, "control", True),
-                    Action("local", f"create pki/ca.key + pki/ca.crt if missing; sign; save pki/{r.name}-server.crt"),
-                    Action(host, "install the certificate", scripts.install_cert(CERT_PLACEHOLDER, CA_PLACEHOLDER), "control", True),
-                ],
-                rollback=scripts.ROLLBACK_CERT,
-                rollback_note="remove the server key and certificates on the host; the site CA here stays",
-                run=self._run_cert, brief=f"Server key on the host, certificate for {sans}",
-                undo_brief="remove the key and certificates",
-            ),
+            self._cert_step(),
             Step(
                 5, "Configuration",
                 [f"Write {render.ETC}/config.yaml, a bootstrap policy {{}} (only if no policy exists yet)",
@@ -264,9 +346,11 @@ class Deployment(Procedure):
             *([self._entry_step()] if r.entry_port else []),
             Step(
                 9, "Verify",
-                [f"From {checker}: /health over TLS trusting only the site CA, the DERP probe and",
-                 "a STUN binding request. Read-only."],
-                [Action(checker, "checks as the login user", scripts.verify(CA_PLACEHOLDER), "checker", False)],
+                [f"From {checker}: /health over TLS "
+                 + ("trusting only the site CA" if r.site_ca else "with its own trust store, by name") + ", the DERP probe",
+                 "and a STUN binding request. Read-only."],
+                [Action(checker, "checks as the login user", scripts.verify(CA_PLACEHOLDER if r.site_ca else None),
+                        "checker", False)],
                 rollback_note="none needed (read-only)", read_only=True, run=self._run_verify,
                 brief=f"Check TLS, DERP and STUN from {checker}",
             ),
@@ -275,6 +359,58 @@ class Deployment(Procedure):
             step.number = number
             step.host = checker if step.title == "Verify" else host
         return steps
+
+    def _cert_step(self):
+        r, host = self.region, self.region.control_host
+        if r.site_ca:
+            sans = ", ".join(f"IP:{ip}" for ip in r.cert_ips)
+            return Step(
+                4, "Certificate",
+                ["Make the server key and CSR on the host (the key never leaves it). Sign the CSR here",
+                 f"with the site CA (created now if missing): SAN {sans}, EKU serverAuth,",
+                 f"{pins.SERVER_CERT_DAYS} days. Install the certificate and the CA certificate.",
+                 "A current certificate for the same key and SANs is kept. A Let's Encrypt renewal from before is removed."],
+                [
+                    Action(host, "key and CSR; prints the CSR and any current certificate", scripts.KEY_AND_CSR, "control", True),
+                    Action("local", f"create pki/ca.key + pki/ca.crt if missing; sign; save pki/{r.name}-server.crt"),
+                    Action(host, "install the certificate", scripts.install_cert(CERT_PLACEHOLDER, CA_PLACEHOLDER), "control", True),
+                ],
+                rollback=scripts.ROLLBACK_CERT,
+                rollback_note="remove the server key and certificates on the host; the site CA here stays",
+                run=self._run_cert, brief=f"Server key on the host, certificate for {sans}",
+                undo_brief="remove the key and certificates",
+            )
+        files = ", ".join(pins.ACME_SH_SHA256)
+        return Step(
+            4, "Certificate",
+            [f"First, through the Cloudflare API from here: the A record {r.domain} -> {r.public_ipv4}, DNS only,",
+             f"marked \"{self.dns_mark}\" (a record tn did not make is never changed). Then",
+             f"a Let's Encrypt certificate for {r.domain}. acme.sh {pins.ACME_SH_VERSION} ({files}, each checked",
+             f"against its pinned sha256) goes to {acme.DIR}, root only. It proves the name with a DNS-01 TXT",
+             "record made through the Cloudflare API, so no port is opened. The API token is asked for once,",
+             f"goes over SSH stdin into {acme.TOKEN_FILE} and is never logged. The certificate and its key",
+             f"go to {render.ETC}/tls; {acme.TIMER.rsplit('/', 1)[-1]} renews them daily when due and restarts Headscale.",
+             "A current certificate is kept."],
+            [
+                Action("local", f"Cloudflare API: make or fix A {r.domain} -> {r.public_ipv4}, DNS only, "
+                       f"comment \"{self.dns_mark}\""),
+                Action(host, "what is installed (read-only)", acme.STATE, "control", True),
+                Action("local", f"only if acme.sh is missing or another build: fetch {pins.acme_url('<file>')} "
+                       "into cache/ unless there, verify sha256"),
+                Action(host, "make a staging directory", acme.STAGE, "control", False),
+                Action("local", "scp acme.sh and dns_cf.sh to <staging directory>/"),
+                Action(host, "verify and install; $1 is the staging directory", acme.install(), "control", True),
+                Action(host, f"only if the host has no token: sh -c '<this>' sh {acme.DIR}, with the token "
+                       "pasted here on stdin", acme.SAVE_TOKEN, None, True),
+                Action(host, "get or keep the certificate, install it, enable the renewal timer", acme.issue(r),
+                       "control", True),
+            ],
+            rollback=scripts.ROLLBACK_CERT, undo=self._undo_letsencrypt,
+            rollback_note=f"remove the renewal timer, {acme.DIR} (with the token) and the key and certificate, and "
+                          "the A record if tn made it; delete the token in Cloudflare too",
+            run=self._run_cert, brief=f"A record and Let's Encrypt certificate for {r.domain}",
+            undo_brief="remove them, acme.sh and the token",
+        )
 
     def _entry_step(self):
         site, r = self.site, self.region
@@ -315,9 +451,13 @@ class Deployment(Procedure):
               if (host := site.host_settings.get(r.control_host)) and host.tailscale_port else []),
             f"  tailnet       {r.ipv4_prefix} · {pins.IPV6_PREFIX}{avoid} · MagicDNS {r.base_domain}",
             f"  DERP          embedded region {r.derp_region_id} {r.derp_region_code!r} ({r.derp_region_name}); official map {official}",
-            f"  certificate   SAN {', '.join('IP:' + ip for ip in r.cert_ips)}, signed by the site CA in pki/",
+            (f"  certificate   SAN {', '.join('IP:' + ip for ip in r.cert_ips)}, signed by the site CA in pki/"
+             if r.site_ca else
+             f"  certificate   Let's Encrypt for {r.domain} (DNS-01 via Cloudflare), renewed by "
+             f"{acme.TIMER.rsplit('/', 1)[-1]}; devices need no site CA"),
             f"  adds          {render.BIN}, user headscale, {render.ETC}/, {render.LIB}/, headscale.service,",
-            f"                {names.KEEPER_UNIT}.timer (names every {names.KEEPER_MINUTES} minute(s))",
+            f"                {names.KEEPER_UNIT}.timer (names every {names.KEEPER_MINUTES} minute(s))"
+            + ("" if r.site_ca else f", {acme.DIR}/, {acme.TIMER.rsplit('/', 1)[-1]}"),
             *([f"  names         swapped with {', '.join(self._peer_controls())} over SSH, by a key that can only "
                "swap names"] if self._peer_controls() else []),
             *([f"  phone entry   udp {r.listen_ipv4}:{r.entry_port}, WireGuard {entry.IFACE} {site.entry_address}"

@@ -46,6 +46,35 @@ def suffix_problem(value):
     return f"{value!r} is not a DNS name"
 
 
+KEY_LINE = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*=")
+
+
+def set_region_value(text, region, key, value):
+    """site.toml text with `key = "value"` set in [regions.<region>], or removed when value is None.
+    Only that one line changes; comments and the other tables stay as they are."""
+    lines = text.splitlines(keepends=True)
+    header = re.compile(rf"^\[regions\.{re.escape(region)}\]\s*(#.*)?$")
+    start = next((i for i, line in enumerate(lines) if header.match(line.rstrip("\n"))), None)
+    if start is None:
+        raise SiteError([f"site.toml has no [regions.{region}]"])
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+    new = f"{key} = {json.dumps(value)}\n" if value is not None else None
+    last = start
+    for i in range(start + 1, end):
+        m = KEY_LINE.match(lines[i])
+        if not m:
+            continue
+        if m.group(1) == key:
+            lines[i:i + 1] = [new] if new else []
+            return "".join(lines)
+        last = i
+    if new:
+        if not lines[last].endswith("\n"):
+            lines[last] += "\n"
+        lines.insert(last + 1, new)
+    return "".join(lines)
+
+
 def dns_label(alias):
     """A host's name in MagicDNS: its SSH alias, lower-case, with other characters as '-'."""
     return re.sub(r"[^a-z0-9-]+", "-", alias.lower()).strip("-")
@@ -85,6 +114,24 @@ class Region:
     grpc_port: int = pins.DEFAULT_GRPC_PORT
     alias_ipv4: str = None  # how this tailnet's addresses appear in the other region, through a line
     entry_port: int = None  # UDP port of the WireGuard entry for phones on the control host; None = no entry
+    domain: str = None      # the login server's name, with a Let's Encrypt certificate; None = IP and the site CA
+    agent_domain: str = None  # tn-agent's name behind a Cloudflare tunnel (MCP, passkey approvals); None = none
+    agent_port: int = pins.DEFAULT_AGENT_PORT  # where tn-agent listens on the control host's loopback
+
+    @property
+    def site_ca(self):
+        """TLS from the site CA, by IP. With a domain, a Let's Encrypt certificate that every device
+        already trusts."""
+        return not self.domain
+
+    @property
+    def server_name(self):
+        return self.domain or self.public_ipv4
+
+    @property
+    def agent_tag(self):
+        """The tag of machines that tn-agent joins; they start no connection (render.policy)."""
+        return f"tag:{self.name}-agent" if self.agent_domain else None
 
     @property
     def alias_net(self):
@@ -114,7 +161,7 @@ class Region:
 
     @property
     def server_url(self):
-        return f"https://{self.public_ipv4}:{self.port}"
+        return f"https://{self.server_name}:{self.port}"
 
     @property
     def cert_ips(self):
@@ -339,7 +386,8 @@ REGION_KEYS = {
     "official_derp": bool,
     "tags": list,
 }
-REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int, "alias_ipv4": str, "base_domain": str, "entry_port": int}
+REGION_OPTIONAL = {"metrics_port": int, "grpc_port": int, "alias_ipv4": str, "base_domain": str, "entry_port": int,
+                   "domain": str, "agent_domain": str, "agent_port": int}
 HOST_KEYS = {"tailscale_port": int, "netfilter_mode": str, "region": str, "tags": list, "accept_dns": bool}
 NETFILTER_MODES = ("on", "nodivert", "off")
 LINE_OPTIONAL = {"port": int, "tunnel_ipv4": str}
@@ -440,16 +488,40 @@ def parse(data, known_host=None, directory=None):
         if pub is not None and (pub.is_unspecified or pub.is_loopback):
             problems.append(f"{where}.public_ipv4: clients cannot reach {pub}")
         _ipv4(f"{where}.listen_ipv4", r["listen_ipv4"], problems)
-        for key in ("port", "stun_port", "metrics_port", "grpc_port", "entry_port"):
+        for key in ("port", "stun_port", "metrics_port", "grpc_port", "entry_port", "agent_port"):
             if key in r:
                 _port(f"{where}.{key}", r[key], problems)
         if r.get("entry_port") == r["stun_port"]:
             problems.append(f"{where}.entry_port: {r['entry_port']} is the STUN port (both UDP)")
         tcp_ports = [r["port"], r.get("metrics_port", pins.DEFAULT_METRICS_PORT), r.get("grpc_port", pins.DEFAULT_GRPC_PORT)]
+        if "agent_domain" in r:
+            tcp_ports.append(r.get("agent_port", pins.DEFAULT_AGENT_PORT))
         if len(set(tcp_ports)) != len(tcp_ports):
-            problems.append(f"{where}: port, metrics_port and grpc_port must differ")
+            problems.append(f"{where}: port, metrics_port, grpc_port and agent_port must differ")
+        if "agent_port" in r and "agent_domain" not in r:
+            problems.append(f"{where}.agent_port: set agent_domain too (tn-agent is reached by that name)")
+        if "agent_domain" in r:
+            agent_domain = r["agent_domain"]
+            if not DNS_RE.match(agent_domain):
+                problems.append(f"{where}.agent_domain: {agent_domain!r} is not a DNS name like agent-{name}.example.com")
+            elif agent_domain == r.get("domain"):
+                problems.append(f"{where}.agent_domain: use another name than the login server's")
+            elif agent_domain == r["base_domain"] or agent_domain.endswith("." + r["base_domain"]):
+                problems.append(f"{where}.agent_domain: {agent_domain} sits inside the MagicDNS suffix {r['base_domain']}")
+            if "domain" not in r:
+                problems.append(f"{where}.agent_domain: tn-agent needs the region's domain too: machines it joins log in "
+                                "by that name, with a certificate they already trust")
+            if f"tag:{name}-agent" in r["tags"]:
+                problems.append(f"{where}.tags: tag:{name}-agent is for the machines tn-agent joins; leave it out")
         if suffix_problem(r["base_domain"]):
             problems.append(f"{where}.base_domain: {suffix_problem(r['base_domain'])}")
+        if "domain" in r:
+            domain = r["domain"]
+            if not DNS_RE.match(domain):
+                problems.append(f"{where}.domain: {domain!r} is not a DNS name like hs-{name}.example.com")
+            elif domain == r["base_domain"] or domain.endswith("." + r["base_domain"]):
+                problems.append(f"{where}.domain: {domain} sits inside the MagicDNS suffix {r['base_domain']}; "
+                                "use a public name")
         if not 900 <= r["derp_region_id"] <= 999:
             problems.append(f"{where}.derp_region_id: use 900-999 for self-hosted DERP regions")
         if not r["derp_region_code"] or not r["derp_region_name"]:
@@ -498,6 +570,18 @@ def parse(data, known_host=None, directory=None):
     distinct("derp_region_id", "region id")
     distinct("derp_region_code", "region code")
     distinct("control_host", "control host")
+    seen_domains = {}
+    for name, r in regions.items():
+        if r.domain in seen_domains:
+            problems.append(f"regions.{name}.domain: {r.domain} is also region {seen_domains[r.domain]}'s login server")
+        elif r.domain:
+            seen_domains[r.domain] = name
+    for name, r in regions.items():
+        if r.agent_domain and r.agent_domain in seen_domains:
+            problems.append(f"regions.{name}.agent_domain: {r.agent_domain} is region {seen_domains[r.agent_domain]}'s "
+                            "login server")
+        elif r.agent_domain:
+            seen_domains[r.agent_domain] = name
     for name, r in regions.items():
         for other, o in regions.items():
             if other != name and r.base_domain != o.base_domain and r.base_domain.endswith("." + o.base_domain):

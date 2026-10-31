@@ -122,20 +122,28 @@ def line_peers(site, region, skip_lines=()):
 
 def policy(site, region, skip_lines=()):
     """Every member reaches every member of this tailnet, and through each line the other
-    region's alias range. The region's tags are owned by the owner, for tagged join keys."""
+    region's alias range. The region's tags are owned by the owner, for tagged join keys.
+
+    With tn-agent (agent_port), the machines it joins carry the region's agent tag and start no
+    connection: every grant's source is then the owner's devices and the region's other tags, not
+    "*". Traffic from a line or a phone entry still counts, as the border or the control host sends
+    it (both tagged)."""
     owner = f"{site.owner_user}@"
-    tags = list(region.tags)
+    tags = list(region.tags) + ([region.agent_tag] if region.agent_tag else [])
+    src = ["autogroup:member", *region.tags] if region.agent_tag else ["*"]
     doc = {
         "tagOwners": {tag: [owner] for tag in tags},
-        "grants": [{"src": ["*"], "dst": ["*"], "ip": ["*"]}],
+        "grants": [{"src": src, "dst": ["*"], "ip": ["*"]}],
     }
     for _ln, other in line_peers(site, region, skip_lines):
         if other.alias_net is not None:
-            doc["grants"].append({"src": ["*"], "dst": [str(other.alias_net)], "ip": ["*"]})
+            doc["grants"].append({"src": src, "dst": [str(other.alias_net)], "ip": ["*"]})
     head = (
         f"// {marker(region)}\n"
         f"// Policy for tailnet {region.name}: every member reaches every member, and the other\n"
         "// region's alias range through each line. Written by tailnet-ops from site.toml.\n"
+        + (f"// Machines tagged {region.agent_tag} (joined through tn-agent) start no connection;\n"
+           "// the others may still reach them.\n" if region.agent_tag else "")
     )
     return head + json.dumps(doc, indent=2) + "\n"
 

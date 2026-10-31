@@ -34,6 +34,7 @@ class AppJoin(Procedure):
         self.target = name
         self.region = site.region(region)
         self.regions = [self.region] + [r for r in site.regions.values() if r.name != self.region.name]
+        self.ca_regions = [r for r in self.regions if r.site_ca]   # login servers by IP, with the site CA
         self.runner = runner
         self.out = out
         self.show = show or out                  # prints without logging: the block holds keys
@@ -74,13 +75,15 @@ class AppJoin(Procedure):
 
     def _ca(self):
         """pki/ca.crt, else the copy on the control hosts (checked against their TLS), else one the
-        user pastes (checked the same way)."""
+        user pastes (checked the same way). None when every login server has a Let's Encrypt certificate."""
+        if not self.ca_regions:
+            return None
         if self.ca_pem is None:
             self.ca_pem = siteca.local(self.site)
         if self.ca_pem is None:
-            pem, source = siteca.fetch(self.site, self.runner, self.regions)
+            pem, source = siteca.fetch(self.site, self.runner, self.ca_regions)
             if pem is None and self.ask_ca:
-                pem = self.ask_ca(self.region, source, lambda text: siteca.pasted(text, self.regions))
+                pem = self.ask_ca(self.region, source, lambda text: siteca.pasted(text, self.ca_regions))
                 source = PASTED if pem else source
             if pem is None:
                 raise StepError(f"{siteca.missing(self.site, self.region)}; from the control hosts: {source}")
@@ -163,7 +166,8 @@ class AppJoin(Procedure):
             self.out(f"    saved the site CA certificate from {self.ca_from} to {siteca.path(self.site)}")
         ensure_private_dir(self.profile_path.parent)
         write_private(self.profile_path, apple.profile(self.site, self.name, self.label, self._ca()))
-        self.out(f"    wrote {self.profile_path} (the site CA and the app's settings; no secret)")
+        self.out(f"    wrote {self.profile_path} ({'the site CA and ' if self.ca_regions else ''}the app's settings; "
+                 "no secret)")
         if self.here:
             self.local.open(self.profile_path)
             self.out("    opened it: install it in System Settings → General → Device Management (it asks for your")
@@ -311,9 +315,11 @@ class AppJoin(Procedure):
                  rollback_note="none needed (read-only)", read_only=True, run=self._run_check,
                  brief="Check the control hosts"),
             Step(2, "Profile",
-                 [f"Write {self.profile_path}: the site CA as a trusted root, and the app's settings:",
+                 [f"Write {self.profile_path}: " + ("the site CA as a trusted root, and " if self.ca_regions else "")
+                  + "the app's settings:",
                   f"name {self.label}, subnet routes and DNS always on. You AirDrop it to the Mac and install it."],
-                 [Action("local", f"write the configuration profile ({apple.APP_DOMAIN} policies and the CA)")],
+                 [Action("local", f"write the configuration profile ({apple.APP_DOMAIN} policies"
+                         + (" and the CA)" if self.ca_regions else ")"))],
                  rollback="(this machine) delete the profile file", rollback_note="delete the file here; on the Mac, "
                  "remove the profile in System Settings", run=self._run_profile, undo=lambda: self._remove(self.profile_path),
                  brief="Write the app's profile", undo_brief="delete the file"),
@@ -354,7 +360,7 @@ class AppJoin(Procedure):
                  "script in Clash Verge", run=self._run_clash, undo=lambda: self._remove(self.clash_path),
                  brief="Write the Clash Verge script", undo_brief="delete the file"),
         ]
-        if self.here:
+        if self.here and self.ca_regions:
             # Trusted for TLS system-wide: the network extension does not take the CA from the profile.
             steps.insert(2, Step(0, "Site CA",
                                  ["Trust the site CA for TLS in the System keychain (security add-trusted-cert), "
@@ -365,17 +371,19 @@ class AppJoin(Procedure):
                                  if self.ca_pem else "none automatic",
                                  run=self._run_trust, brief="Trust the site CA (macOS asks)",
                                  undo_brief="stays; tn prints how to drop it"))
+        if self.here:
             # After the profile, so the app reads its settings when it first starts.
-            steps.insert(3, Step(0, "Tailscale app",
-                                 [f"Unless the app is in {apple.APP}: download Tailscale {pins.TAILSCALE_APP_VERSION}, the "
-                                  "official package, check its pinned sha256",
-                                  "and that Tailscale Inc. signed it, install it with sudo. Open the app and wait until "
-                                  "it answers: macOS asks you",
-                                  "to allow its system extension and VPN configuration."],
-                                 [Action("local", "install if missing, open, wait", apple.app_block())],
-                                 rollback_note="none: the app stays (remove it like any app)", run=self._run_app,
-                                 brief=f"Install and open the Tailscale app ({pins.TAILSCALE_APP_VERSION})",
-                                 undo_brief="the app stays"))
+            at = 3 if self.ca_regions else 2
+            steps.insert(at, Step(0, "Tailscale app",
+                                  [f"Unless the app is in {apple.APP}: download Tailscale {pins.TAILSCALE_APP_VERSION}, the "
+                                   "official package, check its pinned sha256",
+                                   "and that Tailscale Inc. signed it, install it with sudo. Open the app and wait until "
+                                   "it answers: macOS asks you",
+                                   "to allow its system extension and VPN configuration."],
+                                  [Action("local", "install if missing, open, wait", apple.app_block())],
+                                  rollback_note="none: the app stays (remove it like any app)", run=self._run_app,
+                                  brief=f"Install and open the Tailscale app ({pins.TAILSCALE_APP_VERSION})",
+                                  undo_brief="the app stays"))
         local = {"Site CA", "Tailscale app", "Profile", "Clash Verge"}
         for number, s in enumerate(steps, 1):
             s.number = number

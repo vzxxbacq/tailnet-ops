@@ -18,13 +18,17 @@ DEFAULT_TS_BIN = "/opt/homebrew/opt/tailscale/bin/tailscale"
 MIN_VERSION = "1.80"
 
 
-def prelude(mark, alias, logins, port, ca_name):
+def prelude(mark, alias, logins, port, ca_name, ca_logins=None):
+    """ca_logins: the login servers whose TLS comes from the site CA (default: all)."""
+    ca_logins = logins if ca_logins is None else ca_logins
     return f"""set -euo pipefail
 umask 022
 {scripts._vars([
     ("HOST", alias),
     ("LOGIN", logins[0]),
     ("LOGINS", " ".join(logins)),
+    ("CA_LOGINS", " ".join(ca_logins)),
+    ("PUBLIC_LOGINS", " ".join(u for u in logins if u not in ca_logins)),
     ("TS_PORT", port),
     ("LABEL", LABEL),
     ("PLIST", PLIST),
@@ -82,8 +86,8 @@ make_dir() {{
 
 
 def preflight(ca_pem):
-    return scripts.ca_function(ca_pem) + r"""
-fail=0
+    """ca_pem: the site CA, or None when no login server needs it."""
+    return (scripts.ca_function(ca_pem) + "\n" if ca_pem else "") + r"""fail=0
 pass() { printf '  ok    %s\n' "$*"; }
 flag() { printf '  FAIL  %s\n' "$*"; fail=1; }
 
@@ -142,11 +146,18 @@ elif ours_state; then pass "$TS_STATE exists and is ours"
 else flag "$TS_STATE exists and is not ours"; fi
 
 login=ok
-for url in $LOGINS; do
+for url in $CA_LOGINS; do
   if out=$(curl -fsS --max-time 10 --cacert <(ca) "$url/health" 2>&1); then
     pass "reaches $url over TLS with the site CA"
   else
     flag "cannot reach $url with the site CA: $out"; login=fail
+  fi
+done
+for url in $PUBLIC_LOGINS; do
+  if security verify-cert "$url" >/dev/null 2>&1 && out=$(curl -fsS --max-time 10 "$url/health" 2>&1); then
+    pass "reaches $url over TLS with the system's CAs"
+  else
+    flag "cannot reach $url over TLS with the system's CAs: ${out:-macOS does not trust it}"; login=fail
   fi
 done
 echo "TN-FACT login=$login"
@@ -215,6 +226,12 @@ else
   trusted || die "macOS still does not accept $LOGINS"
 fi
 echo "macOS accepts $LOGINS"
+"""
+
+
+# Every login server has a Let's Encrypt certificate: nothing to trust, only to check.
+TRUST_CHECK = r"""trusted || die "macOS does not accept $LOGINS"
+echo "macOS accepts $LOGINS; no site CA needed"
 """
 
 
@@ -338,14 +355,14 @@ ping -c 3 -t 6 -S {my_ip} {target} >/dev/null 2>&1 && echo TN-PING ok || echo TN
 
 
 def leftovers(ca_pem):
-    return scripts.ca_function(ca_pem) + r"""
-for p in "$PLIST" "$TS_STATE" "$TN_DIR" "$SOCKET"; do
+    """ca_pem: the site CA, to look for in the keychain; None when unknown."""
+    keychain = 'if in_keychain "$(ca | fingerprint)"; then echo "TN-LEFT the site CA in the System keychain"; fi\n'
+    return (scripts.ca_function(ca_pem) + "\n" if ca_pem else "") + r"""for p in "$PLIST" "$TS_STATE" "$TN_DIR" "$SOCKET"; do
   if [ -e "$p" ]; then echo "TN-LEFT $p"; fi
 done
 if launchctl print "system/$LABEL" >/dev/null 2>&1; then echo "TN-LEFT launchd job $LABEL"; fi
 if pgrep -x tailscaled >/dev/null; then echo "TN-LEFT a running tailscaled"; fi
-if in_keychain "$(ca | fingerprint)"; then echo "TN-LEFT the site CA in the System keychain"; fi
-for f in /etc/resolver/*; do
+""" + (keychain if ca_pem else "") + r"""for f in /etc/resolver/*; do
   if [ -f "$f" ] && [ "$(head -n 1 "$f")" = "# Added by tailscaled" ]; then echo "TN-LEFT $f"; fi
 done
 """

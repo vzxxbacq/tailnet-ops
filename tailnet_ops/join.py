@@ -44,14 +44,19 @@ def marker(region, alias, personal=False):
     return f"tailnet-ops join region={region.name} host={alias}"
 
 
-def host_prelude(site, alias, port, logins, mark):
+def host_prelude(site, alias, port, logins, mark, ca_logins=None):
+    """ca_logins: the login servers whose TLS comes from the site CA (default: all); the others have
+    certificates that the system trusts already."""
     sums = pins.TAILSCALE_BIN_SHA256
+    ca_logins = logins if ca_logins is None else ca_logins
     return f"""set -euo pipefail
 umask 022
 {scripts._vars([
     ("HOST", alias),
     ("LOGIN", logins[0]),
     ("LOGINS", " ".join(logins)),
+    ("CA_LOGINS", " ".join(ca_logins)),
+    ("PUBLIC_LOGINS", " ".join(u for u in logins if u not in ca_logins)),
     ("TS_PORT", port),
     ("TS_BIN", TS_BIN),
     ("TSD_BIN", TSD_BIN),
@@ -95,8 +100,8 @@ ours_state() {{ [ -f "$TS_STATE/.tailnet-ops" ] && [ "$(cat "$TS_STATE/.tailnet-
 
 
 def preflight(ca_pem):
-    return scripts.ca_function(ca_pem) + r"""
-fail=0
+    """ca_pem: the site CA, or None when no login server needs it."""
+    return (scripts.ca_function(ca_pem) + "\n" if ca_pem else "") + r"""fail=0
 pass() { printf '  ok    %s\n' "$*"; }
 flag() { printf '  FAIL  %s\n' "$*"; fail=1; }
 note() { printf '  note  %s\n' "$*"; }
@@ -161,11 +166,18 @@ if ip link show tailscale0 >/dev/null 2>&1 && ! ours_service; then flag "a tails
 if pgrep -x tailscaled >/dev/null && ! ours_service; then flag "a tailscaled process runs outside our service"; fi
 
 login=ok
-for url in $LOGINS; do
+for url in $CA_LOGINS; do
   if out=$(curl -fsS --max-time 10 --cacert <(ca) "$url/health" 2>&1); then
     pass "reaches $url over TLS with the site CA"
   else
     flag "cannot reach $url with the site CA: $out"; login=fail
+  fi
+done
+for url in $PUBLIC_LOGINS; do
+  if out=$(curl -fsS --max-time 10 "$url/health" 2>&1); then
+    pass "reaches $url over TLS with the system's CAs"
+  else
+    flag "cannot reach $url over TLS with the system's CAs (is ca-certificates installed?): $out"; login=fail
   fi
 done
 echo "TN-FACT login=$login"
@@ -278,6 +290,15 @@ for url in $LOGINS; do
   curl -fsS --max-time 10 "$url/health" >/dev/null || die "the system trust store does not accept $url yet"
 done
 echo "the system trust store accepts $LOGINS"
+"""
+
+
+# Every login server has a certificate the system trusts: nothing to install, only to check.
+TRUST_CHECK = r"""for url in $LOGINS; do
+  curl -fsS --max-time 10 "$url/health" >/dev/null ||
+    die "the system trust store does not accept $url; install the ca-certificates package"
+done
+echo "the system trust store accepts $LOGINS; no site CA needed"
 """
 
 
@@ -472,8 +493,9 @@ def _flag(value):
 
 
 def up_argv(region, alias, netfilter_mode, accept_routes=False, accept_dns=False, ts_bin=TS_BIN,
-            verb="up", nickname=None):
-    """`tailscale up`, or `tailscale login` for a new profile; the key comes on stdin."""
+            verb="up", nickname=None, move=None):
+    """`tailscale up`, or `tailscale login` for a new profile; the key comes on stdin. move: the routes
+    the device advertises, when it moves from another login server (`up` must restate them)."""
     argv = [ts_bin, verb, f"--login-server={region.server_url}", "--auth-key=file:/dev/stdin",
             f"--hostname={dns_label(alias)}", f"--accept-dns={_flag(accept_dns)}",
             f"--accept-routes={_flag(accept_routes)}", "--timeout=60s"]
@@ -481,6 +503,10 @@ def up_argv(region, alias, netfilter_mode, accept_routes=False, accept_dns=False
         argv.append(f"--nickname={nickname}")
     if netfilter_mode:
         argv.append(f"--netfilter-mode={netfilter_mode}")
+    if move is not None:
+        argv.append("--force-reauth")
+        if move:
+            argv.append(f"--advertise-routes={','.join(move)}")
     return argv
 
 
@@ -491,6 +517,7 @@ def set_prefs(accept_routes, accept_dns):
 
 
 STATUS_JSON = '"$TS_BIN" status --json 2>/dev/null\n'
+PREFS_JSON = '"$TS_BIN" debug prefs 2>/dev/null\n'
 NETCHECK_JSON = '"$TS_BIN" netcheck --format=json 2>/dev/null\n'
 NODES_JSON = '"$BIN" nodes list -o json 2>/dev/null\n'
 USERS_JSON = '"$BIN" users list -o json 2>/dev/null\n'
@@ -607,10 +634,14 @@ class Join(Procedure):
         self.ops = ops or LocalOps(site, out)
         self.mark = marker(self.region, m.name, self.personal)
         logins = [r.server_url for r in self.regions]
+        # Only login servers by IP need the site CA; one with a domain has a Let's Encrypt certificate.
+        self.ca_regions = [r for r in self.regions if r.site_ca]
+        ca_logins = [r.server_url for r in self.ca_regions]
         if self.macos:
-            self.prelude = macos.prelude(self.mark, m.name, logins, self.port, f"tailnet-ops-{slug(site.name)}-ca.crt")
+            self.prelude = macos.prelude(self.mark, m.name, logins, self.port, f"tailnet-ops-{slug(site.name)}-ca.crt",
+                                         ca_logins)
         else:
-            self.prelude = host_prelude(site, m.name, self.port, logins, self.mark)
+            self.prelude = host_prelude(site, m.name, self.port, logins, self.mark, ca_logins)
         self.remember = self.forget = None   # set by the CLI: record the join, drop the record
         self.ask_code = None                  # set by the CLI: (region, commands) -> a pasted link code
         self.ask_ca = None                    # set by the CLI: (region, why, accept) -> a pasted site CA, or None
@@ -661,13 +692,15 @@ class Join(Procedure):
 
     def site_ca(self):
         """(pem, why not): pki/ca.crt, else the copy on the control hosts (checked against their TLS),
-        else one the user pastes (checked the same way)."""
+        else one the user pastes (checked the same way). (None, None) when no login server needs it."""
+        if not self.ca_regions:
+            return None, None
         if self._ca_pem is None:
             self._ca_pem = self.ops.ca_pem()
         if self._ca_pem is None and self.runner is not None:
-            pem, source = siteca.fetch(self.site, self.runner, self.regions)
+            pem, source = siteca.fetch(self.site, self.runner, self.ca_regions)
             if pem is None and self.ask_ca:
-                pem = self.ask_ca(self.region, source, lambda text: siteca.pasted(text, self.regions))
+                pem = self.ask_ca(self.region, source, lambda text: siteca.pasted(text, self.ca_regions))
                 source = "your paste" if pem else source
             if pem is None:
                 return None, f"{siteca.missing(self.site, self.region)}; from the control hosts: {source}"
@@ -677,8 +710,9 @@ class Join(Procedure):
         return self._ca_pem, None
 
     def _ca(self):
+        """The site CA; None when no login server needs it."""
         ca, problem = self.site_ca()
-        if ca is None:
+        if problem:
             raise StepError(problem)
         return ca
 
@@ -691,7 +725,7 @@ class Join(Procedure):
     def check(self):
         """Run the read-only preflight and return {"facts", "fails"} for the short plan."""
         ca, problem = self.site_ca()
-        if ca is None:
+        if problem:
             return {"facts": {}, "fails": [problem]}
         result = self.runner.run(self.alias, scripts.wrap(self.prelude, self._preflight_script(ca)), privileged=True,
                                  check=False, echo=False)
@@ -783,6 +817,9 @@ class Join(Procedure):
         return service(unit(self.mark, tailnets, self.port))
 
     def _run_ca(self):
+        if not self.ca_regions:
+            self._host(macos.TRUST_CHECK if self.macos else TRUST_CHECK)
+            return
         self._host(self._install_ca(self._ca()))
 
     def _run_service(self):
@@ -799,9 +836,9 @@ class Join(Procedure):
             return self.dns_setting
         return self.macos or self.facts.get("resolved") == "yes"
 
-    def _argv(self, region, verb="up"):
+    def _argv(self, region, verb="up", move=None):
         return up_argv(region, self.label, None if self.macos else self.netfilter_mode, self.routes_in(region),
-                       self.accept_dns, self.ts_bin, verb, region.name if self.personal else None)
+                       self.accept_dns, self.ts_bin, verb, region.name if self.personal else None, move)
 
     def _run_join(self):
         if self.personal:
@@ -809,15 +846,33 @@ class Join(Procedure):
             return
         status = self._status()
         if status.get("BackendState") == "Running":
-            self.out("    already joined; no new key made; bringing its settings in line with the plan")
-            self._host(set_prefs(self.accept_routes, self.accept_dns))
+            move = self._move(self.region)
+            if move is None:
+                self.out("    already joined; no new key made; bringing its settings in line with the plan")
+                self._host(set_prefs(self.accept_routes, self.accept_dns))
+                return
+            self._log_in(self.region, "up", preauth_key(self.tags), move)
             return
         self._log_in(self.region, "up", preauth_key(self.tags))
 
-    def _log_in(self, region, verb, key_script):
+    def _move(self, region):
+        """None when the device's current profile logs in to the region's login server; else the routes it
+        advertises, as it moves there with a new key (it keeps its machine key)."""
+        try:
+            prefs = _json(self._host(PREFS_JSON, echo=False).output, "tailscale debug prefs")
+        except StepError:
+            self.out("    could not read its login server (tailscale debug prefs); left as it is")
+            return None
+        url = prefs.get("ControlURL")
+        if not url or url == region.server_url:
+            return None
+        self.out(f"    {region.name}: logged in to {url}; moving it to {region.server_url} with a new key")
+        return list(prefs.get("AdvertiseRoutes") or [])
+
+    def _log_in(self, region, verb, key_script, move=None):
         """`tailscale up` or `login` with a key: straight from the control host when this machine can
         log in to it, else from a link code the user makes elsewhere and pastes."""
-        argv = self._argv(region, verb)
+        argv = self._argv(region, verb, move)
         whose = f"user {self.site.owner_user}" if self.personal else ", ".join(self.tags)
         if self.can_reach(region):
             self.out(f"    {region.name}: a single-use, {pins.PREAUTH_KEY_EXPIRY} key for {whose} goes from "
@@ -860,16 +915,18 @@ class Join(Procedure):
     def _join_personal(self):
         profiles = self._profiles()
         for r in self.regions:
-            verb = "login"
+            verb, move = "login", None
             if r.name in profiles:
                 self._host(switch(r), echo=False)
                 if self._status().get("BackendState") == "Running":
-                    self.out(f"    {r.name}: already joined; no new key made; bringing its settings in line with the plan")
-                    self._host(set_prefs(self.routes_in(r), self.accept_dns))
-                    continue
-                verb = "up"   # the profile is there but logged out: log it in again in place
+                    move = self._move(r)
+                    if move is None:
+                        self.out(f"    {r.name}: already joined; no new key made; bringing its settings in line with the plan")
+                        self._host(set_prefs(self.routes_in(r), self.accept_dns))
+                        continue
+                verb = "up"   # the profile is there but logged out, or moves: log it in again in place
             key = user_key(self._owner_id(r)) if self.can_reach(r) else None
-            self._log_in(r, verb, key)
+            self._log_in(r, verb, key, move)
         self._host(switch(self.region))
 
     def _run_verify(self):
@@ -995,7 +1052,9 @@ class Join(Procedure):
                 self._on_control(delete_preauth_key(k.get("id")), region=r)
 
     def _leftovers_script(self):
-        return macos.leftovers(self._ca()) if self.macos else LEFTOVERS
+        if not self.macos:
+            return LEFTOVERS
+        return macos.leftovers(self._ca() if self.ca_regions else self.ops.ca_pem())
 
     def leftovers(self):
         """Read-only: what join left on the host and in Headscale. Empty list = nothing."""
@@ -1042,11 +1101,41 @@ class Join(Procedure):
 
     def run_rollback(self, step):
         if step.number == 3:
-            self._host(self._rollback_ca(self._ca()))
+            # Without a CA region, step 3 only checks; it removes a site CA that an earlier join left.
+            ca = self._ca() if self.ca_regions else self.ops.ca_pem()
+            if ca:
+                self._host(self._rollback_ca(ca))
         else:
             self._host(step.rollback)
 
     # --- the steps --------------------------------------------------------------------
+
+    def _with_ca(self):
+        if not self.ca_regions:
+            return " with the system's CAs"
+        if len(self.ca_regions) == len(self.regions):
+            return " with the site CA"
+        return f" (the site CA for {', '.join(r.name for r in self.ca_regions)})"
+
+    def _ca_placeholder(self):
+        return CA_PLACEHOLDER if self.ca_regions else None
+
+    def _trust_step(self, check, rollback):
+        """Step 3 when every login server has a Let's Encrypt certificate: nothing to trust, only a check.
+        Its rollback removes a site CA that an earlier join added, if this machine knows it."""
+        logins = ", ".join(x.server_url for x in self.regions)
+        known = self.ops.ca_pem() is not None
+        return Step(
+            3, "Trust",
+            [f"Check that {self.alias} trusts {logins} as it is: their certificates come from Let's Encrypt,",
+             "so no site CA is installed. Read-only."],
+            [Action(self.alias, "check", check, "host", True)],
+            rollback=rollback if known else None,
+            rollback_note=("remove a site CA that an earlier join added, if it is this site's" if known
+                           else "none needed (read-only)"),
+            read_only=True, run=self._run_ca, brief="Check that the login servers are trusted",
+            undo_brief="remove an old site CA, if any" if known else "",
+        )
 
     def _os_steps(self):
         """Steps 1-4, which depend on the host's OS."""
@@ -1058,8 +1147,8 @@ class Join(Procedure):
                     1, "Preflight",
                     ["Check macOS, arch, root, tools and Homebrew; that udp/"
                      f"{self.port} is free; that no other Tailscale runs (the app, brew services);",
-                     f"that {a} reaches {logins} over TLS with the site CA. Changes nothing."],
-                    [Action(a, "read-only checks", macos.preflight(CA_PLACEHOLDER), "host", True)],
+                     f"that {a} reaches {logins} over TLS{self._with_ca()}. Changes nothing."],
+                    [Action(a, "read-only checks", macos.preflight(self._ca_placeholder()), "host", True)],
                     rollback_note="none needed (read-only)", read_only=True, run=self._run_preflight,
                     brief="Check the Mac",
                 ),
@@ -1082,7 +1171,7 @@ class Join(Procedure):
                     rollback_note="remove the CA from the System keychain if tailnet-ops added it",
                     run=self._run_ca, brief="Trust the site CA (macOS asks in a window)",
                     undo_brief="remove it from the keychain",
-                ),
+                ) if self.ca_regions else self._trust_step(macos.TRUST_CHECK, macos.rollback_ca(CA_PLACEHOLDER)),
                 Step(
                     4, "tailscaled",
                     [f"Write {macos.PLIST} (port udp/{self.port}, --no-logs-no-support), mark {macos.TS_STATE},",
@@ -1101,8 +1190,8 @@ class Join(Procedure):
                 1, "Preflight",
                 ["Check arch, OS, root, systemd or OpenRC, /dev/net/tun and tools; that udp/"
                  f"{self.port} is free; that no other Tailscale is installed;",
-                 f"that {a} reaches {logins} over TLS with the site CA. Changes nothing."],
-                [Action(a, "read-only checks", preflight(CA_PLACEHOLDER), "host", True)],
+                 f"that {a} reaches {logins} over TLS{self._with_ca()}. Changes nothing."],
+                [Action(a, "read-only checks", preflight(self._ca_placeholder()), "host", True)],
                 rollback_note="none needed (read-only)", read_only=True, run=self._run_preflight,
                 brief="Check the host",
             ),
@@ -1132,7 +1221,7 @@ class Join(Procedure):
                 rollback=rollback_ca(CA_PLACEHOLDER),
                 rollback_note="remove the CA file if it is this site's and rebuild the trust store",
                 run=self._run_ca, brief="Trust the site CA", undo_brief="remove the CA file",
-            ),
+            ) if self.ca_regions else self._trust_step(TRUST_CHECK, rollback_ca(CA_PLACEHOLDER)),
             Step(
                 4, "tailscaled",
                 ([f"Write {TS_INIT}, an OpenRC service under supervise-daemon (port udp/{self.port},",
@@ -1157,13 +1246,16 @@ class Join(Procedure):
                 [f"On {self.control}: make a single-use pre-auth key, valid {pins.PREAUTH_KEY_EXPIRY}, tagged "
                  f"{', '.join(self.tags)}.",
                  f"Its stdout goes through ssh straight into `tailscale up` on {a}; this machine never reads,",
-                 "prints or stores it. Skipped when the host is already joined."],
+                 "prints or stores it. Skipped when the host is already joined; one joined through another",
+                 "login server (the region's old address) moves to this one with a new key and keeps its machine key."],
                 [
                     Action(self.control, "make the key (stdout only)", preauth_key(self.tags), "control", True),
                     Action(a, "join with the key on stdin: " + " ".join(shlex.quote(x) for x in self._argv(r)),
                            None, None, True),
                     Action(a, "if it is already joined, set the same options instead",
                            set_prefs(self.accept_routes, self.accept_dns), "host", True),
+                    Action(a, "if it is joined through another login server: the same `tailscale up` with "
+                           "--force-reauth and the routes it advertises", PREFS_JSON, "host", True),
                     self._code_action(r),
                 ],
                 rollback=LOGOUT,
@@ -1194,7 +1286,8 @@ class Join(Procedure):
              f"user {owner}, without tags. Its stdout goes through ssh straight into `tailscale login "
              f"--nickname=<region>` on {a}:",
              "one profile per region. This machine never reads, prints or stores a key. A region already joined",
-             f"is skipped. Ends on {r.name}."],
+             "is skipped; a profile joined through another login server moves to the region's with a new key.",
+             f"Ends on {r.name}."],
             actions,
             rollback=LOGOUT,
             rollback_note=f"log out of every profile, then delete the node named {self.label} in each region's "

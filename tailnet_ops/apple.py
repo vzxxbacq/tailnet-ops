@@ -40,10 +40,11 @@ def servers(site):
 
 
 def profile(site, name, label, ca_pem):
-    """The .mobileconfig as bytes."""
+    """The .mobileconfig as bytes. ca_pem: the site CA, or None when every login server has a
+    Let's Encrypt certificate."""
     ident = identifier(site, name)
     where = "; ".join(f"{region} {url}" for region, url in servers(site))
-    ca = {
+    ca = ca_pem and {
         "PayloadType": "com.apple.security.root",
         "PayloadIdentifier": f"{ident}.ca",
         "PayloadUUID": _uuid(f"{ident}.ca"),
@@ -75,9 +76,9 @@ def profile(site, name, label, ca_pem):
         "PayloadScope": "System",
         "PayloadRemovalDisallowed": False,
         "PayloadDisplayName": f"tailnet-ops {site.name}: {name}",
-        "PayloadDescription": (f"Trusts the {site.name} site CA for TLS and sets up the Tailscale app as {label}: "
-                               f"subnet routes and DNS on. Login servers: {where}."),
-        "PayloadContent": [ca, app],
+        "PayloadDescription": ((f"Trusts the {site.name} site CA for TLS and sets up" if ca else "Sets up")
+                               + f" the Tailscale app as {label}: subnet routes and DNS on. Login servers: {where}."),
+        "PayloadContent": [ca, app] if ca else [app],
     }
     return plistlib.dumps(top, sort_keys=False)
 
@@ -167,18 +168,30 @@ def login_block(site, regions, keys, home, ca_pem=None, label="air"):
         "/bin/bash <<'TN_EOF'",
         *(trust_lines(site, ca_pem) if ca_pem else []),
         *app_lines(),
+        # An account there already keeps its key; one on another login server (an old address) moves.
         # Before logging in, say plainly why it cannot work: the CA not trusted yet, or no way through.
         "account() {",
+        "  local there=no",
         '  if "$T" switch --list --json 2>/dev/null | grep -q "\\"nickname\\": \\"$1\\""; then',
-        '    "$T" switch "$1" >/dev/null 2>&1 && "$T" set --hostname="$4" --accept-routes=true --accept-dns=true '
+        '    "$T" switch "$1" >/dev/null 2>&1 || { echo "$1: already there, but cannot switch to it"; return 1; }',
+        '    if "$T" debug prefs 2>/dev/null | grep -qF "\\"ControlURL\\": \\"$2\\""; then',
+        '      "$T" set --hostname="$4" --accept-routes=true --accept-dns=true '
         '&& echo "$1: already there; name and settings set" && return 0',
-        '    echo "$1: already there, but its settings could not be set"; return 1',
+        '      echo "$1: already there, but its settings could not be set"; return 1',
+        "    fi",
+        "    there=yes",
         "  fi",
         '  if ! security verify-cert "$2" >/dev/null 2>&1; then',
         '    if curl -sk --max-time 10 -o /dev/null "$2/health"; then',
         '      echo "$1: macOS does not trust $2 yet. Run this again and let it trust the site CA."',
         '    else echo "$1: this Mac cannot reach $2. Is Clash (TUN) or another VPN in the way?"; fi',
         "    return 1",
+        "  fi",
+        '  if [ "$there" = yes ]; then',
+        '    echo "$1: moving to $2 (up to 60 s)"',
+        '    if "$T" up --login-server="$2" --force-reauth --hostname="$4" --accept-routes=true --accept-dns=true \\',
+        '         --auth-key="$3" --timeout=60s; then echo "$1: moved"; return 0; fi',
+        '    echo "$1: did not move"; return 1',
         "  fi",
         '  echo "$1: logging in to $2 (up to 60 s)"',
         '  if "$T" login --login-server="$2" --nickname="$1" --hostname="$4" --accept-routes=true --accept-dns=true \\',
@@ -213,11 +226,13 @@ def tailnet_nets(site):
 
 def clash_script(site):
     """A Clash Verge global extension script: the tailnet's ranges and names, and Tailscale's own
-    traffic, go DIRECT and stay out of the TUN device; .vlan names are not faked."""
+    traffic, go DIRECT and stay out of the TUN device; .vlan names and login server names are not faked."""
     nets = tailnet_nets(site)
     controls = sorted({r.public_ipv4 for r in site.regions.values()})
+    domains = sorted(r.domain for r in site.regions.values() if r.domain)
     rules = [f"IP-CIDR,{n},DIRECT,no-resolve" for n in nets]
     rules += [f"IP-CIDR,{ip}/32,DIRECT,no-resolve" for ip in controls]
+    rules += [f"DOMAIN,{d},DIRECT" for d in domains]
     rules += [f"DOMAIN-SUFFIX,{site.dns_suffix},DIRECT", f"PROCESS-NAME,{NETWORK_EXTENSION},DIRECT",
               "PROCESS-NAME,Tailscale,DIRECT"]
     js = lambda v: "[" + ", ".join(f'"{x}"' for x in v) + "]"  # noqa: E731
@@ -230,7 +245,7 @@ function main(config) {{
   config.tun = Object.assign({{}}, config.tun);
   config.tun["route-exclude-address"] = add(config.tun["route-exclude-address"], nets);
   config.dns = Object.assign({{}}, config.dns);
-  config.dns["fake-ip-filter"] = add(config.dns["fake-ip-filter"], ["+.{site.dns_suffix}"]);
+  config.dns["fake-ip-filter"] = add(config.dns["fake-ip-filter"], {js(["+." + site.dns_suffix, *domains])});
   config.dns["nameserver-policy"] = Object.assign({{}}, config.dns["nameserver-policy"],
                                                   {{"+.{site.dns_suffix}": "100.100.100.100"}});
   return config;

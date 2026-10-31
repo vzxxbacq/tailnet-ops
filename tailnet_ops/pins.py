@@ -32,6 +32,25 @@ TAILSCALE_APP_VERSION = "1.104.2"
 TAILSCALE_APP_URL = f"https://pkgs.tailscale.com/stable/Tailscale-{TAILSCALE_APP_VERSION}-macos.pkg"
 TAILSCALE_APP_SHA256 = "1724d2e021d3c5f817f427f628260c013531a528f1258a7d477735d198b11f55"
 TAILSCALE_APP_SIGNER = "Developer ID Installer: Tailscale Inc. (W5364U7YZB)"
+# acme.sh gets a Let's Encrypt certificate for a region with a domain, answering DNS-01 through
+# Cloudflare's API. Only these two files are used; each is checked against its sha256.
+ACME_SH_VERSION = "3.1.6"
+ACME_SH_URL = "https://raw.githubusercontent.com/acmesh-official/acme.sh/{version}/{path}"
+ACME_SH_SHA256 = {
+    "acme.sh": "c7d68b021cfd6380ea83a82962abde5b484779fee0b97d38681dfa1396bbc8d7",
+    "dnsapi/dns_cf.sh": "9628ee8238cb3f9cfa1b1a985c0e9593436a3e4f8a9d65a6f775b981be9e76c8",
+}
+# cloudflared runs the tunnel in front of tn-agent; the release's own binaries, checked against the
+# sha256 its release notes publish.
+CLOUDFLARED_VERSION = "2026.10.1"
+CLOUDFLARED_URL = "https://github.com/cloudflare/cloudflared/releases/download/{version}/cloudflared-linux-{arch}"
+CLOUDFLARED_SHA256 = {
+    "amd64": "3bfc539f45d2620c71debb7a86be0efa737ed5ccbad9eb85c787116900e5c586",
+    "arm64": "2c65dfabf616c40efc7545d107d7a57ad5e21377e2964b7e88af19a238074a46",
+}
+DEFAULT_AGENT_PORT = 18480   # tn-agent's port on the control host's loopback, where cloudflared reaches it
+ACME_SERVER = "letsencrypt"
+ACME_DNS_SLEEP = 60       # seconds for the TXT record to reach Cloudflare's servers; skips acme.sh's DoH checks
 DEFAULT_TAILSCALE_PORT = 41641
 PREAUTH_KEY_EXPIRY = "10m"
 JOIN_CODE_EXPIRY = "30m"   # a link code made by hand elsewhere and pasted in
@@ -57,9 +76,17 @@ def headscale_url(arch):
     return HEADSCALE_URL.format(version=HEADSCALE_VERSION, arch=arch)
 
 
+def acme_url(path):
+    return ACME_SH_URL.format(version=ACME_SH_VERSION, path=path)
+
+
 def tailscale_asset(arch):
     return f"tailscale_{TAILSCALE_VERSION}_{arch}.tgz"
 
 
 def tailscale_url(arch):
     return TAILSCALE_URL.format(version=TAILSCALE_VERSION, arch=arch)
+
+
+def cloudflared_url(arch):
+    return CLOUDFLARED_URL.format(version=CLOUDFLARED_VERSION, arch=arch)

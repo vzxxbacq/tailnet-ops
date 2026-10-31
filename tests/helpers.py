@@ -7,8 +7,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tailnet_ops import site as sitemod
+from tailnet_ops import cloudflare, site as sitemod
 from tailnet_ops.remote import RemoteError, Result
+
+
+def _no_cloudflare(method, url, token, body=None, timeout=30):
+    raise AssertionError(f"a test tried to reach the Cloudflare API: {method} {url}")
+
+
+cloudflare._http = _no_cloudflare      # no test talks to Cloudflare
 
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE = ROOT / "examples" / "site.example.toml"
@@ -75,7 +82,7 @@ class FakeRunner:
         if self.fail_on and self.fail_on in src_script:
             raise RemoteError(f"script on {src_host} exited with 1")
 
-    def feed(self, host, argv, secret):
+    def feed(self, host, argv, secret, what="the link code"):
         self.calls.append(("feed", host, tuple(argv), secret))
 
     def scripts_for(self, host):

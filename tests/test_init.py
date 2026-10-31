@@ -47,8 +47,8 @@ PROBE = "uid=1000\nroot=sudo\nos=Ubuntu 24.04 LTS\narch=x86_64\nsystemd=yes\ntoo
 
 ANSWERS = [
     "example", "", "",                              # site name, owner user, DNS suffix (defaults)
-    "cn", "cn-edge", "cn-probe", "n", "100.64.10.0/24", "",  # region 1; any port
-    "ovs", "ovs-edge", "ovs-probe", "y", "", "20000-20002",              # region 2; free /24; three ports pass
+    "cn", "cn-edge", "cn-probe", "n", "100.64.10.0/24", "", "",  # region 1; any port; site CA
+    "ovs", "ovs-edge", "ovs-probe", "y", "", "20000-20002", "hs-ovs.example.com",  # region 2; free /24; 3 ports; LE
     "",                                             # no more regions
     "l1", "cn-edge", "ovs-edge", "203.0.113.30", "", "11011",  # line 1: one-way by default, tunnel port
     "",                                             # no more lines
@@ -70,6 +70,7 @@ EXPECTED = {
             "ipv4_prefix": "100.64.1.0/24", "avoid_prefixes": [],
             "derp_region_id": 902, "derp_region_code": "ovs",
             "derp_region_name": "OVS ovs-edge", "official_derp": True, "tags": ["tag:ovs-server", "tag:ovs-border"],
+            "domain": "hs-ovs.example.com",
         },
     },
     "hosts": {

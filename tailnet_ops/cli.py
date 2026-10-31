@@ -2,6 +2,9 @@
 
 import argparse
 import datetime
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -13,7 +16,8 @@ from .procedure import StepError
 from .redact import Redactor, identity
 from .site import dns_label
 
-EPILOG = """Site directory: --site DIR, else $TN_SITE, else ~/.config/tailnet-ops.
+EPILOG = """Start with tn --tui to set up or update a region's Headscale step by step.
+Site directory: --site DIR, else $TN_SITE, else ~/.config/tailnet-ops.
 Nothing on a server changes unless you run apply or rollback and type yes."""
 
 
@@ -74,9 +78,11 @@ def cmd_site_check(args):
         return 1
     print(redact(f"{directory / sitemod.SITE_FILE}: ok"))
     for r in site.regions.values():
-        print(redact(f"  region {r.name}: {r.control_host} -> {r.server_url}, prefix {r.ipv4_prefix}, "
+        cert = "site CA" if r.site_ca else "Let's Encrypt"
+        print(redact(f"  region {r.name}: {r.control_host} -> {r.server_url} ({cert}), prefix {r.ipv4_prefix}, "
                      f"DERP {r.derp_region_id}, checked from {r.check_from}"
-                     + (f", phone entry udp {r.entry_port}" if r.entry_port else "")))
+                     + (f", phone entry udp {r.entry_port}" if r.entry_port else "")
+                     + (f", tn-agent at {r.agent_domain} (tunnel to 127.0.0.1:{r.agent_port})" if r.agent_domain else "")))
     for ln in site.lines:
         print(redact(f"  line {ln.name}: {ln.initiator} -> {ln.responder} ({ln.responder_entry_ipv4})"
                      f"{', one-way' if ln.one_way else ''}"))
@@ -90,11 +96,119 @@ def cmd_site_check(args):
     return 0
 
 
+def cmd_forget_token(args):
+    site = load_site(args)
+    if not shutil.which("security"):
+        print("No macOS keychain here; tn keeps no token on this machine.")
+        return 0
+    if keychain_forget(site.name):
+        print(f"Removed \"{KEYCHAIN_SERVICE}\" ({site.name}) from the login keychain. The control hosts keep their "
+              "copy for renewals; delete the token in Cloudflare to end it everywhere.")
+    else:
+        print("The login keychain holds no tn token for this site.")
+    return 0
+
+
 def _deployment(args, kind):
     site = load_site(args)
     console = Console(redactor(site) if args.redact else identity, run_log(site, kind, args.region))
     runner = remote.SSHRunner(out=console.out, log=console.log)
-    return Deployment(site, args.region, runner=runner, out=console.out), console
+    dep = Deployment(site, args.region, runner=runner, out=console.out)
+    dep.ask_token = token_asker(tui.UI(), site.name)
+    return dep, console
+
+
+KEYCHAIN_SERVICE = "tailnet-ops Cloudflare API token"
+
+
+def keychain_has(account, run=subprocess.run, which=shutil.which):
+    """Whether the login keychain holds tn's token for this site. Reads only the item's attributes, which
+    macOS gives without asking."""
+    if not which("security"):
+        return False
+    p = run(["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account], capture_output=True, text=True)
+    return p.returncode == 0
+
+
+def keychain_token(account, run=subprocess.run, which=shutil.which, timeout=120):
+    """The token kept in the macOS login keychain, or None (also when nobody answers macOS's dialog within
+    timeout seconds). The item trusts no app, so macOS asks the owner before each read (choose Allow, not
+    Always Allow, to keep it that way)."""
+    if not which("security"):
+        return None
+    try:
+        p = run(["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account, "-w"],
+                capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+    token = (p.stdout or "").strip()
+    return token if p.returncode == 0 and token else None
+
+
+def keychain_keep(account, token, run=subprocess.run):
+    """Keep the token in the login keychain. It goes to `security -i` on stdin, never in a command line that
+    ps would show; -T "" trusts no app, so every later read asks the owner."""
+    command = f'add-generic-password -U -s "{KEYCHAIN_SERVICE}" -a "{account}" -T "" -w "{token}"\n'
+    p = run(["security", "-i"], input=command, capture_output=True, text=True)
+    said = f"{p.stdout or ''}{p.stderr or ''}".lower()
+    return p.returncode == 0 and "error" not in said
+
+
+def keychain_forget(account, run=subprocess.run):
+    p = run(["security", "delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account],
+            capture_output=True, text=True)
+    return p.returncode == 0
+
+
+def token_asker(ui, account, run=subprocess.run, which=shutil.which):
+    """The Cloudflare API token: $CF_Token; else the one given before in this run; else, unless quiet, the
+    macOS keychain (it asks you to allow it), else pasted hidden in a terminal, and kept in the keychain
+    if you want. tn never writes it to a file here or logs it."""
+    from .acme import token_problem
+    known = []
+
+    def ask(quiet=False):
+        token = os.environ.get("CF_Token", "").strip()
+        if token:
+            return token
+        if known:
+            return known[0]
+        if quiet:
+            return None
+        if keychain_has(account, run, which):
+            ui.say()
+            ui.say("Reading the Cloudflare token from the macOS keychain. macOS shows a dialog (it may be behind this "
+                   "window): enter your login password and choose Allow. tn waits up to 2 minutes.")
+            token = keychain_token(account, run, which)
+            if token and not token_problem(token):
+                known.append(token)
+                return token
+            ui.warn("The keychain did not give it (denied, or no answer in time).")
+        if not ui.tty:
+            return None
+        ui.say()
+        ui.say(CF_TOKEN_HELP)
+        token = ui.secret("Cloudflare API token", check=token_problem)
+        known.append(token)
+        if which("security") and ui.confirm(
+                "Keep it in the macOS login keychain, so tn does not ask again? (macOS asks you before each use)",
+                default=True):
+            if keychain_keep(account, token, run):
+                ui.say(f"Kept in the login keychain as \"{KEYCHAIN_SERVICE}\" ({account}). When macOS asks, choose "
+                       "Allow (Always Allow would let any program read it). Remove it: ./tn site forget-token")
+            else:
+                ui.warn("The keychain did not take it; tn will ask again next time.")
+        return token
+    return ask
+
+
+CF_TOKEN_HELP = """tn sets the DNS records and (for tn agent) the tunnel through Cloudflare's API; acme.sh answers
+Let's Encrypt's DNS-01 check with it on the control host. One token does it all. Make it at
+https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token:
+  permissions  Zone · Zone · Read, Zone · DNS · Edit, and (for tn agent) Account · Cloudflare Tunnel · Edit
+  resources    Include · Specific zone · the zone of the domain; Include · your account
+It goes to the control host (root only, for renewals). Here tn never writes it to a file or logs it;
+you may keep it in the macOS login keychain, which asks you before each use."""
 
 
 def show_plan(procedure, console, full, checks=None):
@@ -123,6 +237,104 @@ def cmd_control(args):
     finally:
         console.close()
     return 2
+
+
+def cmd_agent(args):
+    from .agent import AgentDeploy, copy_to_clipboard
+
+    site = load_site(args)
+    console = Console(redactor(site) if args.redact else identity, run_log(site, f"agent-{args.action}", args.region))
+    runner = remote.SSHRunner(out=console.out, log=console.log)
+    try:
+        dep = AgentDeploy(site, args.region, runner=runner, out=console.out)
+        dep.ask_token = token_asker(tui.UI(), site.name)
+        action, host = args.action, dep.region.control_host
+        if action == "plan":
+            return show_plan(dep, console, args.full)
+        if action == "apply":
+            return dep.apply(yes=args.yes)
+        if action == "rollback":
+            return dep.rollback(yes=args.yes)
+        if action == "verify":
+            return dep.verify()
+        if action == "preflight":
+            return dep.preflight()
+        if action == "status":
+            return dep.run_once(dep.status)
+        if action == "enroll":
+            if not args.yes and input(f"Type yes to make a one-time passkey enrolment link on {host}: ").strip() != "yes":
+                console.out("Not made; nothing changed.")
+                return 1
+            link = None
+
+            def make():
+                nonlocal link
+                link = dep.new_enrolment()
+            if dep.run_once(make):
+                return 1
+            copied = copy_to_clipboard(link)
+            console.show(f"\n  {link}\n")
+            console.out("Open it within 10 minutes, once: in Safari on this Mac (the passkey syncs to your iPhone "
+                        "through iCloud Keychain) or on the iPhone itself" + (". It is on the clipboard too." if copied else "."))
+            return 0
+        if action == "token":
+            if not args.yes and input(f"Type yes to make a new MCP token on {host} (the one before stops working): "
+                                      ).strip() != "yes":
+                console.out("Not made; nothing changed.")
+                return 1
+            token = None
+
+            def make():
+                nonlocal token
+                token = dep.new_token()
+            if dep.run_once(make):
+                return 1
+            if copy_to_clipboard(token):
+                console.out("The token is on the clipboard; it is neither shown nor kept here.")
+            else:
+                console.show(f"\n  {token}\n")
+                console.out("Copy it now; it is not kept here.")
+            console.out(f"Give the Agent a custom MCP server: URL {dep.url}/mcp, header Authorization: Bearer <token>.")
+            return 0
+    except StepError as e:
+        console.out(f"tn: {e}")
+        return 1
+    finally:
+        console.close()
+    return 2
+
+
+def cmd_tui(args):
+    from .wizard import Wizard
+
+    ui = tui.UI()
+    if not ui.tty:
+        raise ValueError("tn --tui needs a terminal; without one use tn control plan|apply|verify <region>")
+
+    asker = token_asker(ui, load_site(args).name)
+
+    def open_deployment(site, region, token=None):
+        console = Console(redactor(site) if args.redact else identity, run_log(site, "tui", region))
+        runner = remote.SSHRunner(out=console.out, log=console.log)
+        dep = Deployment(site, region, runner=runner, out=console.out)
+        dep.ask_token = (lambda quiet=False: token) if token else asker
+        return dep, console
+
+    def open_agent(site, region, token=None):
+        from .agent import AgentDeploy
+
+        console = Console(redactor(site) if args.redact else identity, run_log(site, "tui-agent", region))
+        runner = remote.SSHRunner(out=console.out, log=console.log)
+        dep = AgentDeploy(site, region, runner=runner, out=console.out)
+        dep.ask_token = (lambda quiet=False: token) if token else asker
+        return dep, console
+
+    def tn(argv):
+        return main([*(["--site", args.site] if args.site else []), *(["--redact"] if args.redact else []), *argv])
+
+    from .agent import copy_to_clipboard
+    return Wizard(ui, lambda: load_site(args), open_deployment, tn, ask_token=asker, open_agent=open_agent,
+                  clipboard=copy_to_clipboard).run()
 
 
 JOIN_ACTIONS = ("plan", "preflight", "apply", "verify", "rollback", "list")
@@ -546,7 +758,10 @@ def build_parser():
     ap = argparse.ArgumentParser(prog="tn", description=__doc__, epilog=EPILOG, parents=[common],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"tailnet-ops {VERSION}")
-    sub = ap.add_subparsers(dest="command", required=True)
+    ap.add_argument("--tui", action="store_true",
+                    help="set up or update a region's Headscale step by step: certificate, checks, backup, "
+                         "plan, apply, verify, and moving its nodes")
+    sub = ap.add_subparsers(dest="command")
 
     p = sub.add_parser("init", parents=[common], help="write site.toml from a few answers plus SSH facts")
     p.add_argument("--out", metavar="PATH", help="write here instead of <site>/site.toml")
@@ -557,6 +772,9 @@ def build_parser():
     s = p.add_subparsers(dest="site_command", required=True)
     c = s.add_parser("check", parents=[common], help="validate the site directory and site.toml")
     c.set_defaults(func=cmd_site_check)
+    c = s.add_parser("forget-token", parents=[common],
+                     help="remove the Cloudflare API token from the macOS login keychain")
+    c.set_defaults(func=cmd_forget_token)
 
     p = sub.add_parser("control", help="deploy Headscale for a region")
     s = p.add_subparsers(dest="action", required=True)
@@ -667,6 +885,37 @@ def build_parser():
     c.add_argument("--yes", action="store_true", help="do not ask")
     c.set_defaults(func=cmd_phone)
 
+    p = sub.add_parser(
+        "agent", help="tn-agent on a region's control host: MCP for Agents, every change approved with your passkey",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="tn-agent lets an Agent read a region's tailnet and ask to join machines. Each join waits\n"
+                    "until you approve it on a page tn-agent serves, with a passkey. It sits behind a Cloudflare\n"
+                    "tunnel at agent_domain, which tn makes with your Cloudflare token: no port opens on the\n"
+                    "control host. Needs domain and agent_domain in the region.\n\n"
+                    "  tn agent plan|apply <region>   install it on the control host (apply asks for yes)\n"
+                    "  tn agent enroll <region>       a one-time link to register your passkey\n"
+                    "  tn agent token <region>        a new MCP token for the Agent (the old one stops working)\n"
+                    "  tn agent status <region>       passkeys, requests and the latest audit lines (read-only)\n"
+                    "  tn agent rollback <region>     remove it, its passkeys and its log")
+    s = p.add_subparsers(dest="action", required=True)
+    for action, help_text in (
+        ("plan", "print every step with its exact remote script and rollback; changes nothing"),
+        ("preflight", "run step 1 only (read-only)"),
+        ("apply", "install and start tn-agent; asks for yes"),
+        ("verify", "reach it from this machine over HTTPS (read-only)"),
+        ("rollback", "stop and remove tn-agent, its passkeys and audit log; asks for yes"),
+        ("enroll", "a one-time link to register a passkey; asks for yes"),
+        ("token", "a new MCP bearer token, onto the clipboard; asks for yes"),
+        ("status", "passkeys, requests and the latest audit lines (read-only)"),
+    ):
+        c = s.add_parser(action, parents=[common], help=help_text)
+        c.add_argument("region")
+        if action == "plan":
+            c.add_argument("--full", action="store_true", help="print every remote script and rollback")
+        if action in ("apply", "rollback", "enroll", "token"):
+            c.add_argument("--yes", action="store_true", help="do not ask")
+        c.set_defaults(func=cmd_agent)
+
     p = sub.add_parser("status", parents=[common], help="list the nodes of a region (read-only)")
     p.add_argument("region")
     p.set_defaults(func=cmd_status)
@@ -674,10 +923,17 @@ def build_parser():
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     args.site = getattr(args, "site", None)
     args.redact = getattr(args, "redact", False)
+    if not args.tui and args.command is None:
+        parser.print_usage(sys.stderr)
+        print("tn: name a command, or run tn --tui", file=sys.stderr)
+        return 2
     try:
+        if args.tui:
+            return cmd_tui(args)
         return args.func(args)
     except sitemod.SiteError as e:
         print("site problem:", file=sys.stderr)

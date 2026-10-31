@@ -15,7 +15,7 @@ script from stdin. The plan prints the prelude once and every body verbatim.
 import shlex
 from pathlib import Path
 
-from . import pins, render
+from . import acme, pins, render
 
 
 def wrap(prelude, body):
@@ -45,6 +45,8 @@ umask 022
 {_vars([
     ("REGION", r.name),
     ("PUBLIC", r.public_ipv4),
+    ("NAME", r.server_name),
+    ("DOMAIN", r.domain or ""),
     ("LISTEN", r.listen_ipv4),
     ("LOCAL", r.local_ipv4),
     ("PORT", r.port),
@@ -59,6 +61,9 @@ umask 022
     ("ETC", render.ETC),
     ("LIB", render.LIB),
     ("UNIT", render.UNIT),
+    ("ACME", acme.DIR),
+    ("CERT_SERVICE", acme.SERVICE),
+    ("CERT_TIMER", acme.TIMER),
     ("SUM_AMD64", pins.HEADSCALE_SHA256["amd64"]),
     ("SUM_ARM64", pins.HEADSCALE_SHA256["arm64"]),
     ("GECOS", "Headscale (tailnet-ops)"),
@@ -88,7 +93,7 @@ ours_bin() {{
 def checker_prelude(region):
     r = region
     return f"""set -euo pipefail
-{_vars([("PUBLIC", r.public_ipv4), ("PORT", r.port), ("STUN_PORT", r.stun_port)])}
+{_vars([("PUBLIC", r.public_ipv4), ("NAME", r.server_name), ("PORT", r.port), ("STUN_PORT", r.stun_port)])}
 die() {{ echo "tn: $*" >&2; exit 1; }}"""
 
 
@@ -183,6 +188,36 @@ if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo unknown)
   pass "clock is NTP-synchronised"
 else
   note "clock sync unknown; certificates need a correct clock"
+fi
+if [ -n "$DOMAIN" ]; then
+  # Let's Encrypt over DNS-01: the name must point here, unproxied, and both APIs must answer.
+  # $1: check (Cloudflare has the record as wanted), skip (step 4 makes it; a lookup now would stay
+  # cached) or soft (no token to ask Cloudflare: look, but step 4 sets it).
+  dns=${1:-check}
+  if [ "$dns" = skip ]; then
+    note "$DOMAIN: not looked up here; step 4 makes its A record first"
+    echo "TN-FACT dns=skipped"
+  else
+    got=$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' || true)
+    case " $got" in
+      *" $PUBLIC "*) pass "$DOMAIN resolves to $PUBLIC"; echo "TN-FACT dns=ok" ;;
+      " ") echo "TN-FACT dns=no"
+           if [ "$dns" = soft ]; then note "$DOMAIN does not resolve yet; step 4 makes its A record -> $PUBLIC"
+           else flag "$DOMAIN does not resolve, though Cloudflare has it -> $PUBLIC: check this host's DNS"; fi ;;
+      *) echo "TN-FACT dns=no"
+         if [ "$dns" = soft ]; then note "$DOMAIN resolves to ${got% }; step 4 points its A record -> $PUBLIC"
+         else flag "$DOMAIN resolves to ${got% } here, not $PUBLIC, though Cloudflare has it right: check this host's DNS"; fi ;;
+    esac
+  fi
+  if curl -fsS --max-time 10 -o /dev/null https://acme-v02.api.letsencrypt.org/directory; then pass "reaches Let's Encrypt"
+  else flag "cannot reach https://acme-v02.api.letsencrypt.org"; fi
+  if curl -sS --max-time 10 -o /dev/null https://api.cloudflare.com/client/v4/ips; then pass "reaches the Cloudflare API"
+  else flag "cannot reach https://api.cloudflare.com"; fi
+  for u in "$CERT_SERVICE" "$CERT_TIMER"; do
+    if [ ! -e "$u" ]; then pass "$u absent"
+    elif [ "$(head -n 1 "$u")" = "# $MARK" ]; then pass "$u exists and is ours"
+    else flag "$u exists and is not ours"; fi
+  done
 fi
 if [ "$OFFICIAL_DERP" = yes ]; then
   if curl -fsS --max-time 10 -o /dev/null https://controlplane.tailscale.com/derpmap/default; then
@@ -291,8 +326,25 @@ fi
 """
 
 
+# The Let's Encrypt renewal, if there is one: its timer, and acme.sh with its account and the API token.
+DROP_ACME = r"""drop_acme() {
+  local u removed=no
+  for u in "$CERT_TIMER" "$CERT_SERVICE"; do
+    if [ -e "$u" ] && [ "$(head -n 1 "$u")" = "# $MARK" ]; then
+      if [ "$u" = "$CERT_TIMER" ]; then systemctl disable --now "${u##*/}" >/dev/null 2>&1 || true; fi
+      rm -f "$u"
+      echo "removed $u"
+      removed=yes
+    fi
+  done
+  if [ "$removed" = yes ]; then systemctl daemon-reload; fi
+  if [ -d "$ACME" ] && ours_etc; then rm -rf "$ACME"; echo "removed $ACME (acme.sh, its account, the API token)"; fi
+}
+"""
+
+
 def install_cert(server_pem, ca_pem):
-    return f"""ours_etc || die "$ETC is missing or not ours"
+    return DROP_ACME + f"""ours_etc || die "$ETC is missing or not ours"
 cd "$ETC/tls"
 cat > server.crt.tn-new <<'TN_PEM'
 {server_pem.strip()}
@@ -313,11 +365,14 @@ for f in server.crt ca.crt; do
 done
 chmod 0644 server.crt ca.crt
 if [ "$changed" = yes ]; then touch "$ETC/.restart-needed"; fi
+# A Let's Encrypt renewal from before would install its certificate over this one.
+drop_acme
 openssl x509 -in server.crt -noout -subject -enddate -ext subjectAltName
 """
 
 
-ROLLBACK_CERT = r"""if ours_etc; then
+ROLLBACK_CERT = DROP_ACME + r"""if ours_etc; then
+  drop_acme
   rm -f "$ETC/tls/server.key" "$ETC/tls/server.crt" "$ETC/tls/ca.crt"
   echo "removed the server key and certificates in $ETC/tls"
 else
@@ -396,9 +451,11 @@ if [ "$was_active" = yes ] && [ -e "$ETC/.restart-needed" ]; then
   echo "restarted headscale to load new files"
 fi
 rm -f "$ETC/.restart-needed"
-url="https://$PUBLIC:$PORT/health"
+url="https://$NAME:$PORT/health"
+trust=()
+if [ -z "$DOMAIN" ]; then trust=(--cacert "$ETC/tls/ca.crt"); fi
 for _ in $(seq 1 30); do
-  if out=$(curl -fsS --max-time 3 --cacert "$ETC/tls/ca.crt" --connect-to "$PUBLIC:$PORT:$LOCAL:$PORT" "$url" 2>&1); then
+  if out=$(curl -fsS --max-time 3 ${trust[@]+"${trust[@]}"} --connect-to "$NAME:$PORT:$LOCAL:$PORT" "$url" 2>&1); then
     echo "local /health over TLS: $out"
     return 0
   fi
@@ -458,20 +515,21 @@ def stun_source():
     return (Path(__file__).with_name("stun.py")).read_text()
 
 
-def verify(ca_pem):
-    return f"""ca() {{
-cat <<'TN_PEM'
-{ca_pem.strip()}
-TN_PEM
-}}
-base="https://$PUBLIC:$PORT"
-echo "1/3 /health over TLS, trusting only the site CA"
-health=$(curl -fsS --max-time 10 --cacert <(ca) "$base/health")
+def verify(ca_pem=None):
+    """From the checker. With ca_pem, TLS must hold with only the site CA; without, with the
+    checker's own trust store, as any device sees a Let's Encrypt certificate."""
+    if ca_pem:
+        head, trust, how = ca_function(ca_pem) + "\n", " --cacert <(ca)", "trusting only the site CA"
+    else:
+        head, trust, how = "", "", "trusting the system's CAs, as every device does"
+    return f"""{head}base="https://$NAME:$PORT"
+echo "1/3 /health over TLS, {how}"
+health=$(curl -fsS --max-time 10{trust} "$base/health")
 echo "    $health"
 case "$health" in *'"pass"'*) ;; *) die "unexpected /health answer" ;; esac
 echo "2/3 DERP"
-probe=$(curl -sS -o /dev/null -w '%{{http_code}}' --max-time 10 --cacert <(ca) "$base/derp/probe")
-derp=$(curl -sS -o /dev/null -w '%{{http_code}}' --max-time 10 --cacert <(ca) "$base/derp")
+probe=$(curl -sS -o /dev/null -w '%{{http_code}}' --max-time 10{trust} "$base/derp/probe")
+derp=$(curl -sS -o /dev/null -w '%{{http_code}}' --max-time 10{trust} "$base/derp")
 echo "    /derp/probe -> $probe, /derp without upgrade -> $derp"
 if [ "$probe" != 200 ] || [ "$derp" != 426 ]; then die "the DERP endpoints did not answer as expected"; fi
 echo "3/3 STUN binding request to udp/$STUN_PORT"
@@ -483,4 +541,24 @@ echo "verify passed"
 
 
 STATUS = r""""$BIN" nodes list -o json
+"""
+
+# A copy of Headscale's state before a change, under /root (root only): the database through
+# SQLite's online backup (safe while Headscale runs, WAL and all), and /etc/headscale plus the
+# server keys. Restore: stop headscale, put db.sqlite and the files back, start it.
+BACKUP = r"""ours_etc || die "$ETC is missing or not ours"
+dir=/root/tailnet-ops-backup/$REGION-$(date -u +%Y%m%d-%H%M%S)
+install -d -m 0700 "$dir"
+if command -v sqlite3 >/dev/null; then
+  sqlite3 "$LIB/db.sqlite" ".backup '$dir/db.sqlite'"
+elif command -v python3 >/dev/null; then
+  python3 -c 'import sqlite3, sys; sqlite3.connect(sys.argv[1]).backup(sqlite3.connect(sys.argv[2]))' \
+    "$LIB/db.sqlite" "$dir/db.sqlite"
+else
+  die "neither sqlite3 nor python3 is here to copy the database safely"
+fi
+tar -C / --exclude='db.sqlite*' -czf "$dir/files.tgz" "${ETC#/}" "${LIB#/}"
+chmod 0600 "$dir"/*
+echo "TN-FACT backup=$dir"
+ls -l "$dir"
 """
