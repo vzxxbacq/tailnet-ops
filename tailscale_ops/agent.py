@@ -619,7 +619,7 @@ fi
 if systemctl is-active --quiet headscale; then pass "headscale.service is running"; else flag "headscale.service is not running"; fi
 if getent group headscale >/dev/null; then pass "group headscale"; else flag "group headscale is missing"; fi
 if grep -qF "\"$AGENT_TAG\"" "$HS_ETC/policy.hujson" 2>/dev/null; then
-  pass "the policy owns $AGENT_TAG and lets it start no connection"
+  pass "the policy owns $AGENT_TAG"
 else
   flag "the policy has no $AGENT_TAG: run tn control apply $REGION first (with agent_domain in site.toml)"
 fi
@@ -1183,7 +1183,7 @@ class AgentDeploy(Procedure):
             f"  login server  {r.server_url} (machines that join log in there)",
             "  Agents may    list nodes; get a one-time join command for a machine; the machine hands its",
             "                login to tn-agent, and you see its address before you approve",
-            f"  joined as     {r.agent_tag}: starts no connection to other machines (tn control's policy)",
+            f"  joined as     {r.agent_tag}: reaches the tailnet like any other machine; the tag marks it as tn-agent's",
             "  Agents never  hold a key, approve, delete or retag nodes, or change the policy",
             f"  adds          users {USER} (group headscale) and {WEB_USER}, {DIR}/, {ETC}/, {STATE}/,",
             "                tn-agent-helper, tn-agent and tn-cloudflared services; at Cloudflare: the tunnel",

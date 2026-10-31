@@ -85,7 +85,7 @@ Agent 管网络用 tn-agent（`tailscale_ops/agentd`，只用标准库，打成�
 | --- | --- |
 | Agent 能做的 | `list_nodes` 看节点；`join_script` 拿一条一次性命令，在它能 SSH 上的 Linux 机器上以 root 运行：装固定版本的 Tailscale，由这台机器自己把登录请求交给 tn-agent，打印审批链接；`request_status` 查结果（带 `wait_seconds` 时，你一批准就立即返回，Agent 不用等你在聊天里告诉它）；`request_leave` 申请让一台机器退出（只限通过 tn-agent 入网、带 `tag:<区>-agent` 的机器；你用 passkey 批准后，tn-agent 删掉这个节点），`leave_script` 给一条命令，在那台机器上卸掉 tn 装的 Tailscale；`resume_script` 在重启后用机器自己的密钥把 Tailscale 重新拉起来，不用再审批。没有 root 或 systemd 的机器（容器、沙箱）用 `command_without_root`：同一个固定版本以普通用户运行（userspace networking），装在主目录；主目录不能执行程序时自动改用 `$TMPDIR` 或 `/tmp`，其他程序通过它打印的 SOCKS5/HTTP 代理 `localhost:1055` 访问内网 |
 | 你批准 | 打开审批链接（页面由控制机自己提供），核对登录请求来自的公网 IP、机器报告的主机名和系统，用 passkey 批准或拒绝。签名的是这一个请求的摘要，用一次就作废；请求 14 分钟内没批就过期 |
-| 批准之后 | tn-agent 运行 `headscale auth register`，再把名字和 tag 改回批准的那样。这台机器带 `tag:<区>-agent`：别的机器能连它，它不能主动连别的机器 |
+| 批准之后 | tn-agent 运行 `headscale auth register`，再把名字和 tag 改回批准的那样。这台机器带 `tag:<区>-agent`，和其他机器一样能互相连接（包括经专线到另一个区）；这个标签只标明它是经 tn-agent 加入的，`request_leave` 只能让这类机器退出 |
 | Agent 拿不到的 | 任何入网密钥、登录链接、API key、站点目录；它不能批准、删除节点、改 tag 或改策略 |
 | 控制机上 | 三个服务：`tn-cloudflared`（固定版本的 cloudflared，核对 sha256，动态用户，Tunnel 令牌只有 root 能读）把 `agent_domain` 的请求从 Cloudflare 带到本机回环；`tn-agent`（用户 `tn-agent-web`，只听 127.0.0.1、只许连回环，没有权限、不存任何东西，只转发）；`tn-agent-helper`（用户 `tn-agent`，属于 headscale 组，没有网络，只听 unix socket，自己校验令牌和每个 passkey 签名）。Cloudflare 在边缘解开 TLS，所以它看得到请求内容。两者都有 systemd 加固。连接数不设上限，只看内存：tn-agent 自己用到上限的 80%，或整台机器可用内存不到 10% 时，新请求回 429（稍后再试）；每个服务 200 MB 起被限速、256 MB 封顶，真不够用时内核先杀 tn-agent，不杀 Headscale。headscale 命令最多同时跑 2 个。令牌和登记码只存哈希；所有改动写进审计日志 |
 

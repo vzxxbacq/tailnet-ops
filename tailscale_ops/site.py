@@ -130,7 +130,7 @@ class Region:
 
     @property
     def agent_tag(self):
-        """The tag of machines that tn-agent joins; they start no connection (render.policy)."""
+        """The tag of machines that tn-agent joins: only these may an Agent ask to take out."""
         return f"tag:{self.name}-agent" if self.agent_domain else None
 
     @property

@@ -467,7 +467,7 @@ class Wizard:
         if result.facts().get("agent_tag") == "yes":
             return None
         ui.say(f"\nHeadscale's policy for {r.name} does not own {r.agent_tag} yet. Machines tn-agent joins carry that "
-               "tag and start no connection; tn control apply brings the policy in line. Headscale reloads it and "
+               "tag; tn control apply brings the policy in line. Headscale reloads it and "
                "keeps running; nothing else changes unless the plan says so.")
         ui.say(ui.dim("Checking (read-only)…"))
         if dep.preflight():

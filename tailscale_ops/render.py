@@ -124,13 +124,12 @@ def policy(site, region, skip_lines=()):
     """Every member reaches every member of this tailnet, and through each line the other
     region's alias range. The region's tags are owned by the owner, for tagged join keys.
 
-    With tn-agent (agent_port), the machines it joins carry the region's agent tag and start no
-    connection: every grant's source is then the owner's devices and the region's other tags, not
-    "*". Traffic from a line or a phone entry still counts, as the border or the control host sends
-    it (both tagged)."""
+    With tn-agent, the machines it joins carry the region's agent tag. The owner approved each one with
+    a passkey, so they reach the tailnet like any other machine; the tag only marks which machines an
+    Agent may ask to take out."""
     owner = f"{site.owner_user}@"
     tags = list(region.tags) + ([region.agent_tag] if region.agent_tag else [])
-    src = ["autogroup:member", *region.tags] if region.agent_tag else ["*"]
+    src = ["*"]
     doc = {
         "tagOwners": {tag: [owner] for tag in tags},
         "grants": [{"src": src, "dst": ["*"], "ip": ["*"]}],
@@ -142,8 +141,8 @@ def policy(site, region, skip_lines=()):
         f"// {marker(region)}\n"
         f"// Policy for tailnet {region.name}: every member reaches every member, and the other\n"
         "// region's alias range through each line. Written by tailnet-ops from site.toml.\n"
-        + (f"// Machines tagged {region.agent_tag} (joined through tn-agent) start no connection;\n"
-           "// the others may still reach them.\n" if region.agent_tag else "")
+        + (f"// Machines tagged {region.agent_tag} joined through tn-agent, each approved with a passkey.\n"
+           if region.agent_tag else "")
     )
     return head + json.dumps(doc, indent=2) + "\n"
 

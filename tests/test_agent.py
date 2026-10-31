@@ -113,14 +113,15 @@ class SiteTest(TempDirTest):
 
 
 class PolicyTest(TempDirTest):
-    def test_agent_machines_start_no_connection(self):
+    def test_agent_machines_reach_the_tailnet_like_the_others(self):
         site = self.load_site(example_text(OVS))
         doc = json.loads("\n".join(l for l in render.policy(site, site.regions["ovs"]).splitlines()
                                    if not l.startswith("//")))
         self.assertEqual(doc["tagOwners"]["tag:ovs-agent"], ["owner@"])
         for grant in doc["grants"]:
-            self.assertEqual(grant["src"], ["autogroup:member", "tag:ovs-server", "tag:ovs-border"])
-        self.assertEqual(doc["grants"][0]["dst"], ["*"])     # the others still reach them
+            self.assertEqual(grant["src"], ["*"])               # the owner approved each one with a passkey
+        self.assertEqual(doc["grants"][0]["dst"], ["*"])
+        self.assertTrue(any(g["dst"] != ["*"] for g in doc["grants"]))   # and the other region's alias range
 
     def test_regions_without_tn_agent_keep_their_policy(self):
         site = self.load_site(example_text(OVS))

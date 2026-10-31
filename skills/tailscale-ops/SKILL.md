@@ -69,8 +69,11 @@ itself serves. You never hold a key that changes the tailnet, and you cannot app
 6. If you want to check on the machine: `tailscale status` (in user mode, the script's
    `tailscale --socket=<dir>/tailscaled.sock status`) lists the tailnet.
 
-A machine joined this way gets the region's agent tag: it can be reached, but it starts no
-connection to other machines until the owner opens one. The login is valid for about 15 minutes
+A machine joined this way gets the region's agent tag, which marks it as joined through tn-agent
+(only such machines can be taken out with `request_leave`). It reaches the tailnet like any other
+machine, the other region's hosts through the lines included. In user mode that is TCP through the
+proxy: `ping` does not go through it, so test with, for example,
+`curl -x socks5h://localhost:1055 http://<address>:<port>/`. The login is valid for about 15 minutes
 after the command ran. If the request expires, ask the owner, then get a new join command.
 
 ## Take a machine out
