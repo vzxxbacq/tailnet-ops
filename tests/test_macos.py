@@ -5,8 +5,8 @@ import shutil
 import subprocess
 import unittest
 
-from tailnet_ops import join, macos, scripts, targets
-from tailnet_ops.procedure import StepError
+from tailscale_ops import join, macos, scripts, targets
+from tailscale_ops.procedure import StepError
 from tests.helpers import FakeRunner, TempDirTest, bash, run_bash
 from tests.test_join import CA, FakeOps, status
 

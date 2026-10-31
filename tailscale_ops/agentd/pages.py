@@ -90,7 +90,7 @@ def leave_approval(req, config):
     ]
     cls, label = LEAVE_STATUS[req["status"]]
     body = [f"<h1>让 {e(req['name'])} 退出 {e(req['region'])}？</h1>",
-            '<p class="sub">tailnet-ops · 这一页由控制机自己提供，内容以这里为准</p>', _rows(rows)]
+            '<p class="sub">tailscale-ops · 这一页由控制机自己提供，内容以这里为准</p>', _rows(rows)]
     if req["status"] == "pending":
         body += ['<p class="note">批准后，tn-agent 从 Headscale 删掉这个节点，它马上断开、再也连不上；要回来得重新入网。'
                  "机器上的 Tailscale 由 Agent 之后清理。批准和拒绝都要 passkey。</p>",
@@ -121,7 +121,7 @@ def approval(req, config):
     ]
     cls, label = STATUS[req["status"]]
     body = [f"<h1>让 {e(req['name'])} 加入 {e(req['region'])}？</h1>",
-            '<p class="sub">tailnet-ops · 这一页由控制机自己提供，内容以这里为准</p>', _rows(rows)]
+            '<p class="sub">tailscale-ops · 这一页由控制机自己提供，内容以这里为准</p>', _rows(rows)]
     if req["status"] == "pending":
         body += ['<p class="note">公网 IP 是 tn-agent 收到这台机器登录时看到的来源地址，主机名和系统由机器自己报告。'
                  "先核对 IP 是不是你要加的那台机器，再批准。批准和拒绝都要 passkey（面容 ID、触控 ID 或设备密码）。</p>",
@@ -141,16 +141,16 @@ def approval(req, config):
 
 def enrolment(config):
     e = html.escape
-    body = (f"<h1>登记 passkey</h1><p class=\"sub\">tailnet-ops · 网络 {e(config['region'])}</p>"
+    body = (f"<h1>登记 passkey</h1><p class=\"sub\">tailscale-ops · 网络 {e(config['region'])}</p>"
             '<p class="note">登记以后，Agent 发来的每个改动都要用这把 passkey 批准。用 Safari 登记的 passkey 存在 '
             "iCloud 钥匙串里，会同步到你的 iPhone 和 Mac。这个链接只能用一次，几分钟后失效。</p>"
             '<div class="actions"><button id="enroll">登记</button></div><p id="msg"></p>')
-    return _page("登记 passkey · tailnet-ops", body, {"page": "enroll"})
+    return _page("登记 passkey · tailscale-ops", body, {"page": "enroll"})
 
 
 def tokens(config):
     e = html.escape
-    body = (f"<h1>MCP 令牌</h1><p class=\"sub\">tailnet-ops · 网络 {e(config['region'])}</p>"
+    body = (f"<h1>MCP 令牌</h1><p class=\"sub\">tailscale-ops · 网络 {e(config['region'])}</p>"
             '<p class="note">Agent 平台用令牌连上这里的 MCP。有了令牌，Agent 只能查看网络、申请让机器入网；每次入网'
             "仍然要你在审批页上用 passkey 批准。生成、查看、撤销令牌都要 passkey。</p>"
             '<div class="card"><div class="row"><b>名字</b><span><input id="label" value="agent" maxlength="40" '
@@ -166,7 +166,7 @@ def tokens(config):
             '<p class="note">在 Agent 平台加一个自定义 MCP 服务器，填上地址，认证方式选请求头：名字 Authorization，'
             "值 Bearer 加令牌（上面一行就是）。</p></div>"
             '<div id="tokens"></div><p id="msg"></p>')
-    return _page("MCP 令牌 · tailnet-ops", body, {"page": "tokens"})
+    return _page("MCP 令牌 · tailscale-ops", body, {"page": "tokens"})
 
 
 def message(title, text):

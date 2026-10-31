@@ -566,9 +566,9 @@ class App:
             self.enrolments[digest] = (challenge, self.clock() + CHALLENGE_SECONDS)
         owner = self.config["owner"]
         return {"challenge": webauthn.b64url(challenge),
-                "rp": {"id": self.config["rp_id"], "name": f"tailnet-ops {self.region}"},
+                "rp": {"id": self.config["rp_id"], "name": f"tailscale-ops {self.region}"},
                 "user": {"id": webauthn.b64url(user_id), "name": f"{owner}@{self.region}",
-                         "displayName": f"tailnet-ops {self.region}"},
+                         "displayName": f"tailscale-ops {self.region}"},
                 "excludeCredentials": [c["id"] for c in self.store.credentials()], "timeout": 120000}
 
     def enroll_finish(self, code, answer):

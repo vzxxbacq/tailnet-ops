@@ -6,7 +6,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from tailnet_ops import cli
+from tailscale_ops import cli
 
 TOKEN = "cf" + "Ab9" * 12
 

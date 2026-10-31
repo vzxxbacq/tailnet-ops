@@ -3,7 +3,7 @@
 Every host is `<name>.<suffix>` and `<name>.<region>.<suffix>`, the same names in every region.
 A region's own hosts are answered by MagicDNS from its Headscale (the short name) and by extra
 records (the name with the region); the hosts of the regions it reaches through a line are
-extra records that point at their alias addresses. tailnet-ops keeps those records in each
+extra records that point at their alias addresses. tailscale-ops keeps those records in each
 Headscale's extra records file, which Headscale reloads when it changes.
 
 A control host set up by `tn control apply` runs a keeper every minute. It writes the records

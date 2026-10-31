@@ -1,7 +1,7 @@
 import json
 import subprocess
 
-from tailnet_ops import names, scripts
+from tailscale_ops import names, scripts
 from tests.helpers import FakeRunner, TempDirTest, bash, example_text
 
 
@@ -59,7 +59,7 @@ class NamesTest(TempDirTest):
         self.assertEqual(rows[("cn", "shared.ovs.tailnet.internal")][2], "—")   # its short name is cn's own host
 
     def test_suffixes(self):
-        from tailnet_ops.site import suffix_problem
+        from tailscale_ops.site import suffix_problem
         for ok in ("vlan", "vlan.internal", "tailnet.internal"):
             self.assertIsNone(suffix_problem(ok), ok)
         for bad in ("local", "office.local", "localhost", "Bad_Name", "-x"):

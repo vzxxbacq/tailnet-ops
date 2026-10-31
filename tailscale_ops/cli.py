@@ -757,7 +757,7 @@ def build_parser():
 
     ap = argparse.ArgumentParser(prog="tn", description=__doc__, epilog=EPILOG, parents=[common],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--version", action="version", version=f"tailnet-ops {VERSION}")
+    ap.add_argument("--version", action="version", version=f"tailscale-ops {VERSION}")
     ap.add_argument("--tui", action="store_true",
                     help="set up or update a region's Headscale step by step: certificate, checks, backup, "
                          "plan, apply, verify, and moving its nodes")

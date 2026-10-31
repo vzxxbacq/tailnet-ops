@@ -6,11 +6,11 @@ import shlex
 import subprocess
 from unittest import mock
 
-from tailnet_ops import join, remote, targets, tui
-from tailnet_ops.appjoin import AppJoin
-from tailnet_ops.cli import code_asker
-from tailnet_ops.procedure import StepError
-from tailnet_ops.remote import RemoteError, Result
+from tailscale_ops import join, remote, targets, tui
+from tailscale_ops.appjoin import AppJoin
+from tailscale_ops.cli import code_asker
+from tailscale_ops.procedure import StepError
+from tailscale_ops.remote import RemoteError, Result
 from tests.helpers import FakeRunner, TempDirTest, bash
 from tests.test_apple import CA, KEY_CN, KEY_OVS, AppJoinTest, Runner as AppRunner
 from tests.test_join import FakeOps, responses, status

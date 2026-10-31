@@ -1158,7 +1158,7 @@ class Join(Procedure):
                      f"(then it is used as it is). Needs version {macos.MIN_VERSION} or later."],
                     [Action(a, "install with Homebrew", macos.INSTALL, "host", True)],
                     rollback=macos.ROLLBACK_INSTALL,
-                    rollback_note="brew uninstall tailscale, only if tailnet-ops installed it",
+                    rollback_note="brew uninstall tailscale, only if tailscale-ops installed it",
                     run=self._run_binaries, brief="Install tailscale with Homebrew",
                     undo_brief="uninstall it if tn installed it",
                 ),
@@ -1168,7 +1168,7 @@ class Join(Procedure):
                      f"{logins}. macOS asks for your password or Touch ID in a window. Skipped when it is trusted."],
                     [Action(a, "trust the CA", macos.install_ca(CA_PLACEHOLDER), "host", True)],
                     rollback=macos.rollback_ca(CA_PLACEHOLDER),
-                    rollback_note="remove the CA from the System keychain if tailnet-ops added it",
+                    rollback_note="remove the CA from the System keychain if tailscale-ops added it",
                     run=self._run_ca, brief="Trust the site CA (macOS asks in a window)",
                     undo_brief="remove it from the keychain",
                 ) if self.ca_regions else self._trust_step(macos.TRUST_CHECK, macos.rollback_ca(CA_PLACEHOLDER)),
@@ -1386,7 +1386,7 @@ class Join(Procedure):
         ]
         if facts:
             out.append(f"  host          {facts.get('os', '?')}, {facts.get('machine', '?')}"
-                       + ("  (already joined by tailnet-ops)" if facts.get("joined") == "ours" else ""))
+                       + ("  (already joined by tailscale-ops)" if facts.get("joined") == "ours" else ""))
         for name in (checks or {}).get("codes", []):
             x = self.site.region(name)
             out.append(f"  link code     {bad} this machine cannot log in to {x.control_host}: step 5 shows a command "

@@ -10,4 +10,4 @@ test:
 	$(PYTHON) -m unittest discover -s tests -t . -q
 
 guard:
-	$(PYTHON) -m tailnet_ops.guard --history
+	$(PYTHON) -m tailscale_ops.guard --history

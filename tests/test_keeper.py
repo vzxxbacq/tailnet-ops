@@ -4,8 +4,8 @@ import json
 import os
 import subprocess
 
-from tailnet_ops import names, scripts
-from tailnet_ops.remote import Result
+from tailscale_ops import names, scripts
+from tailscale_ops.remote import Result
 from tests.helpers import FakeRunner, TempDirTest, bash
 
 

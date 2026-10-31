@@ -7,10 +7,10 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from tailnet_ops import acme, apple, join, pins, scripts
-from tailnet_ops.control import Deployment
-from tailnet_ops.procedure import StepError
-from tailnet_ops.site import SiteError
+from tailscale_ops import acme, apple, join, pins, scripts
+from tailscale_ops.control import Deployment
+from tailscale_ops.procedure import StepError
+from tailscale_ops.site import SiteError
 from tests.helpers import FakeRunner, TempDirTest, bash, example_text, run_bash
 from tests.test_join import FakeOps as JoinOps, responses as join_responses, status
 from tests.test_scripts import Sandbox, all_scripts

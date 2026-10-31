@@ -4,12 +4,12 @@ Offline: the deployment and the tn commands it runs are fakes."""
 import io
 import json
 
-from tailnet_ops import scripts, site as sitemod
-from tailnet_ops.remote import Result
-from tailnet_ops.site import SiteError
-from tailnet_ops.tui import UI
-from tailnet_ops.cloudflare import CloudflareError
-from tailnet_ops.wizard import Wizard, compare, movers, nodes_from
+from tailscale_ops import scripts, site as sitemod
+from tailscale_ops.remote import Result
+from tailscale_ops.site import SiteError
+from tailscale_ops.tui import UI
+from tailscale_ops.cloudflare import CloudflareError
+from tailscale_ops.wizard import Wizard, compare, movers, nodes_from
 from tests.helpers import FakeRunner, TempDirTest, any_host, example_text
 
 NODES = [

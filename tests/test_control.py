@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from tailnet_ops import names, pins, render, scripts
-from tailnet_ops.control import Deployment, StepError
+from tailscale_ops import names, pins, render, scripts
+from tailscale_ops.control import Deployment, StepError
 from tests.helpers import FakeRunner, TempDirTest, example_text
 
 ARCH_FACTS = "TN-FACT arch=amd64\nTN-FACT installed=none\n"

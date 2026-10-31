@@ -9,9 +9,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tailnet_ops import join, pins, remote, scripts, siteca
-from tailnet_ops import site as sitemod
-from tailnet_ops.procedure import StepError
+from tailscale_ops import join, pins, remote, scripts, siteca
+from tailscale_ops import site as sitemod
+from tailscale_ops.procedure import StepError
 from tests.helpers import FakeRunner, TempDirTest, bash, example_text, run_bash
 
 CA = "-----BEGIN CERTIFICATE-----\nCCCC\n-----END CERTIFICATE-----\n"
@@ -137,7 +137,7 @@ class JoinPlanTest(TempDirTest):
         self.assertIn("Not ready to join (2):", text)
 
     def test_check_without_ssh_or_ca(self):
-        from tailnet_ops.remote import Result
+        from tailscale_ops.remote import Result
 
         class NoSSH(FakeRunner):
             def run(self, host, script, **kw):

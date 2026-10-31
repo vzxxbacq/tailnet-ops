@@ -52,7 +52,7 @@ NAME_SLOT, TAGS_SLOT, SCRIPT_SLOT = "__TN_NAME__", "__TN_TAGS__", "__TN_SCRIPT__
 ENROL_SECONDS = 600
 TOKEN_RE = re.compile(r"^tna_[A-Za-z0-9_-]{40,}$")
 PACKAGE = Path(__file__).resolve().parent / "agentd"
-SKILL = Path(__file__).resolve().parent.parent / "skills" / "tailnet-ops" / "SKILL.md"
+SKILL = Path(__file__).resolve().parent.parent / "skills" / "tailscale-ops" / "SKILL.md"
 
 # Both halves: no capabilities, a read-only system; memory throttled at MemoryHigh and capped at
 # MemoryMax, and under memory pressure the kernel kills them before Headscale. TasksMax is far above
@@ -357,7 +357,7 @@ else
   echo "== 5/5 login"; tn_login
 fi"""
     return _machine_script(site, region, [
-        f"tailnet-ops {VERSION}: join this machine to tailnet {region.name} ({region.server_url}) as {NAME_SLOT}.",
+        f"tailscale-ops {VERSION}: join this machine to tailnet {region.name} ({region.server_url}) as {NAME_SLOT}.",
         f"Run once. As root with systemd or OpenRC it installs Tailscale {pins.TAILSCALE_VERSION} (sha256 pinned) as a",
         "service; otherwise (or with TN_MODE=user) it runs the same build as the user, in userspace networking,",
         "from TN_DIR (default ~/.local/state/tailnet-ops/tailscale-<region>). Then it hands the login to tn-agent",
@@ -425,7 +425,7 @@ else
 fi
 echo "TN-LEFT {NAME_SLOT}\""""
     return _machine_script(site, region, [
-        f"tailnet-ops {VERSION}: take Tailscale off this machine ({NAME_SLOT}, tailnet {region.name}). It removes only",
+        f"tailscale-ops {VERSION}: take Tailscale off this machine ({NAME_SLOT}, tailnet {region.name}). It removes only",
         "what tn's join command installed (each carries its mark); anything else stays. Use the same user and",
         "TN_MODE/TN_DIR as the join.",
     ], parts, main, slots=False)
@@ -435,7 +435,7 @@ def resume_template(site, region):
     """The command an Agent runs after a restart: it starts tailscaled again from the machine's own key (the
     service, or the userspace tailscaled where nothing starts it), with no approval."""
     return _machine_script(site, region, [
-        f"tailnet-ops {VERSION}: start Tailscale again on this machine ({NAME_SLOT}, tailnet {region.name}) after",
+        f"tailscale-ops {VERSION}: start Tailscale again on this machine ({NAME_SLOT}, tailnet {region.name}) after",
         "a restart, from its own key; no approval needed. Use the same user and TN_MODE/TN_DIR as the join.",
     ], [("tn_resume", RESUME)], "tn_resume", slots=False)
 
@@ -1019,7 +1019,7 @@ class AgentDeploy(Procedure):
             return
         cf, zone = self._cloudflare()
         gone = cf.delete_record(zone, r.agent_domain, cname_mark(r))
-        self.out(f"    Cloudflare: deleted {gone} record(s) {r.agent_domain} made by tailnet-ops")
+        self.out(f"    Cloudflare: deleted {gone} record(s) {r.agent_domain} made by tailscale-ops")
         if cf.delete_tunnel(zone["account"], tunnel_name(r)):
             self.out(f"    Cloudflare: deleted the tunnel {tunnel_name(r)}")
 
@@ -1056,8 +1056,8 @@ class AgentDeploy(Procedure):
                 1, "Preflight",
                 [f"Here, through the Cloudflare API (read-only): the zone of {r.agent_domain}, and that no record tn",
                  f"did not make holds that name. On {host}: root, systemd {MIN_SYSTEMD}+, tools, Python 3.8+;",
-                 f"tailnet-ops's Headscale with a policy that owns {r.agent_tag}; tcp/{r.agent_port} free on loopback;",
-                 "Cloudflare's tunnel edge reachable; nothing named tn-agent unless tailnet-ops made it. Changes nothing."],
+                 f"tailscale-ops's Headscale with a policy that owns {r.agent_tag}; tcp/{r.agent_port} free on loopback;",
+                 "Cloudflare's tunnel edge reachable; nothing named tn-agent unless tailscale-ops made it. Changes nothing."],
                 [Action("local", f"Cloudflare API: zone of {r.agent_domain}, its records, the tunnel {tunnel_name(r)}"),
                  Action(host, "read-only checks", PREFLIGHT, "agent", True)],
                 rollback_note="none needed (read-only)", read_only=True, run=self._run_preflight,
@@ -1068,7 +1068,7 @@ class AgentDeploy(Procedure):
                 [f"Create two system users (no login, no home): {USER} for the private half, in group headscale",
                  f"so it can use the headscale CLI; {WEB_USER} for the web half, in group {USER} only so it",
                  f"reaches the private half's socket. Create {DIR} (root), {ETC} (root, readable by group",
-                 f"{USER}) and {STATE} ({USER} only), each marked as made by tailnet-ops."],
+                 f"{USER}) and {STATE} ({USER} only), each marked as made by tailscale-ops."],
                 [Action(host, "create", USER_AND_DIRS, "agent", True)],
                 rollback=ROLLBACK_USER_AND_DIRS,
                 rollback_note=f"remove {DIR}, {ETC}, {STATE} (passkeys, requests, audit log) and both users, if ours",
@@ -1077,7 +1077,7 @@ class AgentDeploy(Procedure):
             ),
             Step(
                 3, "Program",
-                [f"Build the service zip here from tailnet_ops/agentd and the Skill (sha256 {self.digest[:12]}…),",
+                [f"Build the service zip here from tailscale_ops/agentd and the Skill (sha256 {self.digest[:12]}…),",
                  f"copy it to {host}, check it again and install it as {DIR}/agentd.pyz (root-owned: neither",
                  f"half can change its code). Write {ETC}/config.json and, in {DIR}, join.sh, leave.sh and",
                  "resume.sh: the scripts Agents run on machines (shown below)."],
@@ -1148,7 +1148,7 @@ class AgentDeploy(Procedure):
     def header(self):
         r = self.region
         return "\n".join([
-            f"Region {r.name} of site {self.site.name!r} · tailnet-ops {VERSION} · tn-agent {SERVICE_VERSION} · "
+            f"Region {r.name} of site {self.site.name!r} · tailscale-ops {VERSION} · tn-agent {SERVICE_VERSION} · "
             f"cloudflared {pins.CLOUDFLARED_VERSION}",
             f"  control host  {r.control_host}  (scripts run as root over SSH)",
             f"  serves        {self.url}/mcp (Agents, with a bearer token from `tn agent token`)",

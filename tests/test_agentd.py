@@ -18,12 +18,12 @@ import urllib.request
 from pathlib import Path
 from unittest import mock
 
-from tailnet_ops.agentd import app as appmod, cbor, helper, mcp, p256, pages, webauthn
-from tailnet_ops.agentd.app import App, Refused
-from tailnet_ops.agentd.headscale import Headscale, HeadscaleError
-from tailnet_ops.agentd import server as web
-from tailnet_ops.agentd.server import Handler, Server
-from tailnet_ops.agentd.store import Store
+from tailscale_ops.agentd import app as appmod, cbor, helper, mcp, p256, pages, webauthn
+from tailscale_ops.agentd.app import App, Refused
+from tailscale_ops.agentd.headscale import Headscale, HeadscaleError
+from tailscale_ops.agentd import server as web
+from tailscale_ops.agentd.server import Handler, Server
+from tailscale_ops.agentd.store import Store
 from tests.helpers import TempDirTest
 
 RP_ID = "hs-ovs.example.com"
@@ -35,7 +35,7 @@ CONFIG = {"region": "ovs", "origin": ORIGIN, "rp_id": RP_ID, "login_server": LOG
           "tags": ["tag:ovs-agent"]}
 TEMPLATE = "#!/bin/bash\nHOST=__TN_NAME__\nTAGS=__TN_TAGS__\nSCRIPT=__TN_SCRIPT__\n"
 MACHINE = {"auth_url": AUTH_URL, "hostname": "web1.example", "os": "Debian GNU/Linux 12", "arch": "x86_64"}
-PACKAGE = Path(__file__).resolve().parent.parent / "tailnet_ops" / "agentd"
+PACKAGE = Path(__file__).resolve().parent.parent / "tailscale_ops" / "agentd"
 
 
 # --- test-only signing and encoding ------------------------------------------------------
@@ -723,7 +723,7 @@ class HelperTest(AppCase):
         hello = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
         self.assertEqual(self.ask("mcp", token="wrong", message=hello)["code"], 401)
         self.assertEqual(self.ask("mcp", token=self.TOKEN, message=hello)["result"]["result"]["serverInfo"]["name"],
-                         "tailnet-ops")
+                         "tailscale-ops")
         self.assertEqual(self.ask("mcp", token=self.TOKEN, message={"jsonrpc": "2.0", "method": "x"})["result"], None)
         self.assertEqual(self.ask("view", id="nope")["code"], 400)
         self.assertEqual(self.ask("delete_node", id=1)["code"], 404)
@@ -845,7 +845,7 @@ class ServerTest(AppCase):
         self.assertEqual(self.mcp(hello, token="x" * 40)[0], 401)
         code, body, _ = self.mcp(hello)
         self.assertEqual(code, 200)
-        self.assertEqual(json.loads(body)["result"]["serverInfo"]["name"], "tailnet-ops")
+        self.assertEqual(json.loads(body)["result"]["serverInfo"]["name"], "tailscale-ops")
         self.assertEqual(self.mcp({"jsonrpc": "2.0", "method": "notifications/initialized"})[0], 202)
         self.assertEqual(self.http("/mcp", hello, {"Authorization": f"Bearer {self.TOKEN}",
                                                    "Origin": "https://evil.example"})[0], 403)

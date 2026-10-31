@@ -5,9 +5,9 @@ import threading
 import unittest
 from unittest import mock
 
-from tailnet_ops import guard, join, targets, tui
-from tailnet_ops import site as sitemod
-from tailnet_ops.site import SiteError
+from tailscale_ops import guard, join, targets, tui
+from tailscale_ops import site as sitemod
+from tailscale_ops.site import SiteError
 from tests.helpers import TempDirTest
 from tests.test_join import FakeOps
 
@@ -77,7 +77,7 @@ class ResolveTest(TempDirTest):
         names = guard.site_host_names(self.site.directory, lookup=lambda a: {})
         self.assertIn("laptop7", names)
         self.assertIn("box7", names)
-        from tailnet_ops.cli import redactor
+        from tailscale_ops.cli import redactor
         self.assertEqual(redactor(self.site)("ssh box7 for laptop7"), "ssh <joined1> for <joined1>")
 
 

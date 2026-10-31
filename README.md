@@ -1,6 +1,8 @@
-# tailnet-ops
+# tailscale-ops
 
 快速搭建自建 Headscale 网络：按地区分成几个 tailnet，地区之间可以用专线相连，也支持只能由一侧发起连接的单向专线。代码可以公开复用；每个人的站点配置、证书和密钥只放在自己电脑的私有目录里。
+
+> 独立的开源项目，与 Tailscale Inc. 无关，也未获其认可。Tailscale 是 Tailscale Inc. 的注册商标；本工具管理的是自建的 [Headscale](https://github.com/juanfont/headscale)，设备上用的是开源的 Tailscale 客户端。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -27,7 +29,7 @@
 | `./tn control preflight <region>` | 只读预检：系统、端口、已有文件 |
 | `./tn control apply <region>` | 按计划部署 Headscale，要输入 `yes`。同时装上名字守护：每分钟更新本区机器的名字，并通过专线两端所在区的控制机互换名单（发起端那台用一把只能交换名单的 SSH 密钥去连另一台），所以任何方式入网、改名、删除，一分钟内各区都能解析。区设了 `entry_port` 时，还装上手机入口（见下文） |
 | `./tn control verify <region>` | 从检查机只读验证 TLS `/health`、DERP、STUN |
-| `./tn control rollback <region>` | 倒序回滚，只删 tailnet-ops 自己做的东西，要输入 `yes` |
+| `./tn control rollback <region>` | 倒序回滚，只删 tailscale-ops 自己做的东西，要输入 `yes` |
 | `./tn join` | 交互式入网：用方向键选机器（本机或 SSH 别名）、方案、地区，填名字；先只读检查并显示计划，再问要不要执行 |
 | `./tn join plan [机器] [选项]` | 不提问，用选项：先只读检查，再列出步骤和撤销方法。不写机器就是本机。`--offline` 跳过检查，`--full` 看完整脚本 |
 | `./tn join apply [机器] [选项]` | 装 Tailscale、信任站点 CA、用一次性密钥入网，要输入 `yes`。tn 会把这台机器怎么入网记在站点目录的 `joined.json` |
@@ -77,7 +79,7 @@ Token 在第一次需要时输入（不显示），也可以放在环境变量 `
 
 入网密钥默认由 tn 登录控制机生成，直接通过管道交给 `tailscale up`，不显示也不保存。如果运行 tn 的机器登不上控制机，第 5 步会打印一条可以复制的命令：在能登上控制机的机器上运行它，得到一个一次性链接码（30 分钟有效），再粘贴回来（输入不显示）。这时名字同步和验证里需要控制机的部分会跳过；控制机装了名字守护的话，名字一分钟内自动出现，否则之后在能登上的机器上运行 `tn dns sync`。
 
-Agent 管网络用 tn-agent（`tailnet_ops/agentd`，只用标准库，打成一个 zip 装到控制机），说明见 `skills/tailnet-ops/SKILL.md`，同一份内容也由 MCP 的 `tailnet_guide` 工具返回：
+Agent 管网络用 tn-agent（`tailscale_ops/agentd`，只用标准库，打成一个 zip 装到控制机），说明见 `skills/tailscale-ops/SKILL.md`，同一份内容也由 MCP 的 `tailnet_guide` 工具返回：
 
 | | 怎么做 |
 | --- | --- |
@@ -89,22 +91,27 @@ Agent 管网络用 tn-agent（`tailnet_ops/agentd`，只用标准库，打成一
 
 最简单的是 `tn --tui` 里选 tn-agent，下面这些它都会替你做。手动的话：在区里加 `agent_domain = "agent-<区>.<你的域名>"`（同一个 Cloudflare 账号下的名字）。`tn agent apply` 用 Token 自己建 Tunnel、它唯一的转发规则（`agent_domain` → 本机 `127.0.0.1:agent_port`，默认 18480）和代理的 CNAME，都带 tn 的标记，回滚时一并删掉。在 Agent 平台上加一个自定义 MCP 服务器：地址 `https://<agent_domain>/mcp`，请求头 `Authorization: Bearer <令牌>`，令牌在 `https://<agent_domain>/tokens` 用 passkey 生成。加了 `agent_domain` 以后，先重跑一次 `tn control apply`，让策略里有 agent tag，再装 tn-agent。卸载用 `tn agent rollback`；先卸 tn-agent，再回滚控制机。
 
-手机不装 Tailscale：手机同一时间只能开一个 VPN，那就是代理 App。所以在 `site.toml` 里给区加上 `entry_port`，`tn control apply` 会在控制机上多装一个手机入口：一个 WireGuard 接口 `tn-entry`（在这个 UDP 端口上，密钥在控制机上生成），加上 tailnet-ops 自己的 nft 表 `tn_entry`。手机的代理 App 里每个区一个 WireGuard 节点，按需选用。手机在每个入口上的地址都一样，访问机器也都用同一套地址：本区的内网地址直接到；经专线才能到的区，它的内网地址由入口换成映射地址，走专线过去。除此以外，入口一律不转发，不能当出口上网。入口地址（各区都是 `10.255.254.1`）兼做手机的 DNS：内网名字交给本机的 MagicDNS，答出的就是从这个入口能到的地址；其他名字交给控制机自己的上游 DNS。这个小服务 `tn-entry-dns` 只用标准库，跟着入口一起装、更新、拆除。手机的流量会伪装成控制机发出的，所以别的机器不用加回程路由。哪条防火墙链会挡这些流量，就在那里加带标记的放行规则，由定时器保持在位；回滚时只删这些。
+手机不装 Tailscale：手机同一时间只能开一个 VPN，那就是代理 App。所以在 `site.toml` 里给区加上 `entry_port`，`tn control apply` 会在控制机上多装一个手机入口：一个 WireGuard 接口 `tn-entry`（在这个 UDP 端口上，密钥在控制机上生成），加上 tailscale-ops 自己的 nft 表 `tn_entry`。手机的代理 App 里每个区一个 WireGuard 节点，按需选用。手机在每个入口上的地址都一样，访问机器也都用同一套地址：本区的内网地址直接到；经专线才能到的区，它的内网地址由入口换成映射地址，走专线过去。除此以外，入口一律不转发，不能当出口上网。入口地址（各区都是 `10.255.254.1`）兼做手机的 DNS：内网名字交给本机的 MagicDNS，答出的就是从这个入口能到的地址；其他名字交给控制机自己的上游 DNS。这个小服务 `tn-entry-dns` 只用标准库，跟着入口一起装、更新、拆除。手机的流量会伪装成控制机发出的，所以别的机器不用加回程路由。哪条防火墙链会挡这些流量，就在那里加带标记的放行规则，由定时器保持在位；回滚时只删这些。
 
 系统自动识别：Linux 用固定版本的 Tailscale，由 systemd 管理；Alpine 等用 OpenRC 的系统改用 OpenRC 服务（supervise-daemon 守护），先装好 `apk add bash curl ca-certificates iproute2 tar iptables`；Mac 用 Homebrew 的 tailscale 和 launchd，站点 CA 加进系统钥匙串（macOS 会弹窗要密码或 Touch ID）。本机的脚本用 sudo 在本机执行，不走 SSH。
 
-站点目录默认 `~/.config/tailnet-ops/`，也可用 `--site DIR` 或 `TN_SITE`。加 `--redact` 后，输出里的地址、主机名和密钥会换成固定占位符，方便分享。
+站点目录默认 `~/.config/tailnet-ops/`，也可用 `--site DIR` 或 `TN_SITE`。项目原名 tailnet-ops：机器上留下的标记（`.tailnet-ops` 文件、单元说明、DNS 记录注释、Tunnel 名等）和这个默认目录沿用旧名，已装好的机器照常识别，不用迁移。加 `--redact` 后，输出里的地址、主机名和密钥会换成固定占位符，方便分享。
 
 当前状态：控制面、设备入网（Linux 和 macOS 的命令行、Mac 上的 Tailscale App）、单向专线和跨区名字都已完成，并在一个两区站点上实际部署验证。个人设备按所在地点自动切换区还没有做。
 
 ## English
 
-tailnet-ops (`tn`) sets up self-hosted [Headscale](https://github.com/juanfont/headscale) networks: one tailnet
+tailscale-ops (`tn`) sets up self-hosted [Headscale](https://github.com/juanfont/headscale) networks: one tailnet
 per region, joined by dedicated lines, including one-way lines where only one side may start connections.
 It is Python 3.11+ with the standard library only, and drives your hosts over SSH.
 
+tailscale-ops is an independent project, not affiliated with or endorsed by Tailscale Inc. Tailscale is a
+registered trademark of Tailscale Inc. It manages self-hosted Headscale; devices run the open-source Tailscale client.
+The project was called tailnet-ops: the marks it leaves on hosts and the default site directory keep that name, so
+existing installs are recognised as they are.
+
 - **Plans first.** Every command prints its steps and how each is undone; nothing changes until you type `yes`.
-  Rollback removes only what tailnet-ops made, then checks that nothing is left.
+  Rollback removes only what tailscale-ops made, then checks that nothing is left.
 - **Private by design.** Your site (addresses, host names, keys) lives in `~/.config/tailnet-ops/`, never in
   the repository. Certificates come from a site CA of your own, or, for a region with a `domain`, from
   Let's Encrypt (DNS-01 through the Cloudflare API, so no port is opened); no logs go to third parties. `make check`
@@ -122,6 +129,6 @@ It is Python 3.11+ with the standard library only, and drives your hosts over SS
 | `./tn line plan\|apply\|verify\|rollback <line>` | A WireGuard line between two regions, with alias ranges, NAT and routes |
 | `./tn dns list\|sync` | One name per host in every region: `<host>.<region>.<suffix>` |
 | `./tn phone add\|remove\|list <name>` | Phones: with `entry_port` set, a region's control host also runs a WireGuard entry (its own nft table). A phone's proxy app gets one WireGuard node per region; tn makes the phone's key here and writes WireGuard and Clash (Stash, mihomo) files |
-| `./tn agent plan\|apply\|enroll\|token\|status\|rollback <region>` | tn-agent on a region's control host, behind a Cloudflare tunnel at `agent_domain` (needs `domain` too; no port opens): an MCP endpoint where an Agent lists nodes and asks to join machines it reaches over SSH, and a page where you approve each request with a passkey. The Agent never holds a key. See `skills/tailnet-ops/SKILL.md` |
+| `./tn agent plan\|apply\|enroll\|token\|status\|rollback <region>` | tn-agent on a region's control host, behind a Cloudflare tunnel at `agent_domain` (needs `domain` too; no port opens): an MCP endpoint where an Agent lists nodes and asks to join machines it reaches over SSH, and a page where you approve each request with a passkey. The Agent never holds a key. See `skills/tailscale-ops/SKILL.md` |
 
 Start with `examples/site.example.toml` or `./tn init`. Licensed under MIT.

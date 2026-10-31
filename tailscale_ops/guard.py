@@ -1,6 +1,6 @@
 """Keep site data and secrets out of the repository: working tree and all history.
 
-    python3 -m tailnet_ops.guard [--history] [--repo DIR] [--site DIR]
+    python3 -m tailscale_ops.guard [--history] [--repo DIR] [--site DIR]
 
 Generic rules apply everywhere: IPv4 literals outside the documentation ranges,
 100.64.0.0/10 and loopback; private keys; Headscale and Tailscale keys; tokens;

@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from tailnet_ops import site as sitemod
+from tailscale_ops import site as sitemod
 from tests.helpers import TempDirTest, any_host, example_text
 
 

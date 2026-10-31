@@ -4,7 +4,7 @@ import os
 import subprocess
 from unittest import mock
 
-from tailnet_ops import guard
+from tailscale_ops import guard
 from tests.helpers import TempDirTest
 
 # Built at run time so this file never holds the literals the guard blocks.

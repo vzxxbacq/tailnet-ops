@@ -472,8 +472,8 @@ def _toml_value(v):
 def to_toml(data, comments=None, today=None):
     comments = comments or {}
     out = [
-        "# tailnet-ops site configuration. Private: keep it out of every repository.",
-        "# Schema: examples/site.example.toml in the tailnet-ops repository."
+        "# tailscale-ops site configuration. Private: keep it out of every repository.",
+        "# Schema: examples/site.example.toml in the tailscale-ops repository."
         + (f" Written by `tn init` on {today}." if today else ""),
         "",
     ]

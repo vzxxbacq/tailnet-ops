@@ -1,10 +1,10 @@
-"""Find the firewall chains that would drop tailnet-ops's traffic, and the narrow
+"""Find the firewall chains that would drop tailscale-ops's traffic, and the narrow
 accept rules that let it through.
 
 Any host can carry its own firewall: an nftables table with `policy drop` on the
 forward or input hook, Docker's or ufw's `FORWARD DROP` (iptables-nft), or legacy
 iptables. A packet passes only if every base chain on its hook accepts it, so
-tailnet-ops inserts, at the top of each chain that could drop, a few rules that
+tailscale-ops inserts, at the top of each chain that could drop, a few rules that
 accept only its own traffic (for a line: between the tunnel and tailscale0), tagged
 with a comment. Nothing else in those chains changes, and rollback deletes exactly
 the tagged rules.

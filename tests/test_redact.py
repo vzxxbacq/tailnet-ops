@@ -1,5 +1,5 @@
-from tailnet_ops.control import Deployment
-from tailnet_ops.redact import Redactor
+from tailscale_ops.control import Deployment
+from tailscale_ops.redact import Redactor
 from tests.helpers import TempDirTest, example_text
 
 # Built at run time so this file never holds the literals the guard blocks.

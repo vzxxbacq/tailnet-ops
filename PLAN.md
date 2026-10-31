@@ -1,10 +1,10 @@
 # Plan
 
-给 owner 的一句话：tailnet-ops 要做成任何人都能复用的快速搭建工具。代码和文档里没有任何人的隐私；每个使用者的站点配置、证书和密钥只在自己电脑的私有目录里。第一阶段仍是部署两套 Headscale，先用你的站点验证，部署前把计划给你确认。
+给 owner 的一句话：tailscale-ops 要做成任何人都能复用的快速搭建工具。代码和文档里没有任何人的隐私；每个使用者的站点配置、证书和密钥只在自己电脑的私有目录里。第一阶段仍是部署两套 Headscale，先用你的站点验证，部署前把计划给你确认。
 
 ## Product
 
-tailnet-ops sets up a self-hosted Headscale network quickly:
+tailscale-ops sets up a self-hosted Headscale network quickly:
 
 - **Regions.** The network is split into regions, with one tailnet per region. Inside a region, devices connect directly. Regions never see each other, so nothing probes across a border.
 - **Lines.** Regions can be joined by dedicated lines. A line may be one-way for connection setup: only its initiator can start a connection, and traffic then flows both ways inside the tunnel it keeps alive.
@@ -14,7 +14,7 @@ The first site is the owner's. Its configuration and notes are in the owner's si
 
 ## Privacy, built into the tool
 
-1. **The repository is publishable.** It holds code, templates, docs and examples only. Examples use documentation ranges and placeholder names. `make check` runs a guard over tracked files and all history: it blocks other IPv4 literals outside 100.64.0.0/10 and 10.255.0.0/16 (tailnet-ops's default alias and tunnel range, the same for every site), private keys, Headscale and Tailscale auth keys, and tokens.
+1. **The repository is publishable.** It holds code, templates, docs and examples only. Examples use documentation ranges and placeholder names. `make check` runs a guard over tracked files and all history: it blocks other IPv4 literals outside 100.64.0.0/10 and 10.255.0.0/16 (tailscale-ops's default alias and tunnel range, the same for every site), private keys, Headscale and Tailscale auth keys, and tokens.
 2. **The site directory is private.**
    - Location: `~/.config/tailnet-ops/` by default, or `--site DIR` or `TN_SITE`.
    - Permissions: the directory is 0700 and its files 0600.

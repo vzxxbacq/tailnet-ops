@@ -14,10 +14,10 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from tailnet_ops import agent, join, pins, privacy, render, scripts
-from tailnet_ops.procedure import StepError
-from tailnet_ops import site as sitemod
-from tailnet_ops.site import SiteError
+from tailscale_ops import agent, join, pins, privacy, render, scripts
+from tailscale_ops.procedure import StepError
+from tailscale_ops import site as sitemod
+from tailscale_ops.site import SiteError
 from tests.helpers import FakeRunner, TempDirTest, example_text, run_bash
 
 OVS = ('public_ipv4 = "203.0.113.20"',
@@ -343,11 +343,11 @@ class BundleTest(TempDirTest):
         p = subprocess.run([sys.executable, "-I", "-c", "import sys, pkgutil; sys.path.insert(0, sys.argv[1]); "
                             "print(pkgutil.get_data('agentd', 'guide.md').decode().splitlines()[0])", str(path)],
                            capture_output=True, text=True)
-        self.assertEqual(p.stdout.strip(), "# tailnet-ops")
+        self.assertEqual(p.stdout.strip(), "# tailscale-ops")
 
     def test_guide_is_the_skill(self):
-        self.assertTrue(agent.SKILL.read_text().startswith("---\nname: tailnet-ops\n"))
-        self.assertTrue(agent.guide().startswith("# tailnet-ops"))
+        self.assertTrue(agent.SKILL.read_text().startswith("---\nname: tailscale-ops\n"))
+        self.assertTrue(agent.guide().startswith("# tailscale-ops"))
         self.assertIn("passkey", agent.guide())
 
 

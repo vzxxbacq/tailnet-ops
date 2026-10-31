@@ -3,11 +3,11 @@ import os
 import shutil
 import subprocess
 
-from tailnet_ops import firewall, render, scripts
-from tailnet_ops import line as linemod
-from tailnet_ops import site as sitemod
-from tailnet_ops.procedure import StepError
-from tailnet_ops.remote import Result
+from tailscale_ops import firewall, render, scripts
+from tailscale_ops import line as linemod
+from tailscale_ops import site as sitemod
+from tailscale_ops.procedure import StepError
+from tailscale_ops.remote import Result
 from tests.helpers import FakeRunner, TempDirTest, bash, example_text
 
 PUB_I = "I" * 43 + "="

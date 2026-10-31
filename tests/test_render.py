@@ -1,6 +1,6 @@
 import json
 
-from tailnet_ops import pins, render
+from tailscale_ops import pins, render
 from tests.helpers import TempDirTest
 
 

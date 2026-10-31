@@ -8,7 +8,7 @@ import unittest
 import zlib
 from pathlib import Path
 
-from tailnet_ops import stun
+from tailscale_ops import stun
 
 
 def tailscale_style_parse(b):

@@ -14,7 +14,7 @@ the same on every entry, and on the way in:
 - the entry's own address answers DNS (entry_dns.py): the tailnet's names from MagicDNS,
   which gives addresses this entry reaches, and other names from the host's resolvers.
 
-Everything hangs off the wg-quick unit, as for a line, and lives in tailnet-ops's own
+Everything hangs off the wg-quick unit, as for a line, and lives in tailscale-ops's own
 nft table. Peers are the phones in the site's phones.json (`tn phone add`).
 """
 
@@ -178,7 +178,7 @@ def conf(site, region):
 
 
 def nft_rules(site, region):
-    """tailnet-ops's own table: where phones may go, the mapping across lines, and NAT."""
+    """tailscale-ops's own table: where phones may go, the mapping across lines, and NAT."""
     others = reached(site, region)
     allowed = ", ".join([region.ipv4_prefix] + [str(o.alias_net) for o in others])
     maps = [f'    iifname "{IFACE}" ip daddr {o.ipv4_prefix} dnat ip prefix to ip daddr map '

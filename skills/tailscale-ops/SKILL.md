@@ -1,11 +1,11 @@
 ---
-name: tailnet-ops
-description: Join machines you reach over SSH to a self-hosted Headscale tailnet, and see what is on it, through the tailnet-ops MCP server. Every change waits for the owner's passkey approval. Use when asked to connect a server to the private network, the tailnet or Tailscale, or to list its machines.
+name: tailscale-ops
+description: Join machines you reach over SSH to a self-hosted Headscale tailnet, and see what is on it, through the tailscale-ops MCP server. Every change waits for the owner's passkey approval. Use when asked to connect a server to the private network, the tailnet or Tailscale, or to list its machines.
 ---
 
-# tailnet-ops
+# tailscale-ops
 
-The tailnet-ops MCP server runs on a region's Headscale control host. You can read the tailnet and
+The tailscale-ops MCP server runs on a region's Headscale control host. You can read the tailnet and
 ask for changes. Only the owner can approve a change, with a passkey on a page that the server
 itself serves. You never hold a key that changes the tailnet, and you cannot approve anything.
 

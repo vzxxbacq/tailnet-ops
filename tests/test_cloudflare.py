@@ -3,7 +3,7 @@
 import json
 import unittest
 
-from tailnet_ops.cloudflare import Cloudflare, CloudflareError
+from tailscale_ops.cloudflare import Cloudflare, CloudflareError
 from tests import helpers  # noqa: F401  (keeps the real API out of reach)
 
 MARK = "tailnet-ops region=ovs"

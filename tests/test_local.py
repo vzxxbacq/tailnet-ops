@@ -1,4 +1,4 @@
-from tailnet_ops import remote
+from tailscale_ops import remote
 from tests.helpers import TempDirTest
 
 

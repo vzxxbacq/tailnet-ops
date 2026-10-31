@@ -1,6 +1,6 @@
 # Working rules
 
-- tailnet-ops is a reusable tool, and this repository must stay publishable. Never commit site data:
+- tailscale-ops is a reusable tool, and this repository must stay publishable. Never commit site data:
   - real addresses or a real site's host names;
   - inventories, keys, auth keys or tokens;
   - links to private documents.

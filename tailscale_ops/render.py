@@ -1,4 +1,4 @@
-"""Files that tailnet-ops writes on a control host."""
+"""Files that tailscale-ops writes on a control host."""
 
 import json
 
@@ -9,7 +9,7 @@ ETC = "/etc/headscale"
 LIB = "/var/lib/headscale"
 UNIT = "/etc/systemd/system/headscale.service"
 SOCKET = "/var/run/headscale/headscale.sock"
-# Names of other regions' hosts, kept by tailnet-ops; Headscale reloads it when it changes.
+# Names of other regions' hosts, kept by tailscale-ops; Headscale reloads it when it changes.
 EXTRA_RECORDS = f"{ETC}/extra-records.json"
 
 

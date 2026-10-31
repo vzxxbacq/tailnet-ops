@@ -195,7 +195,7 @@ class Procedure:
         self.out(f"Rollback for {self.command} {self.subject} on {self.target}:")
         for s in steps:
             self.out(f"  step {s.number} {s.title}: {s.rollback_note}")
-        self.out("Only things marked as made by tailnet-ops are removed; anything else is reported and skipped.")
+        self.out("Only things marked as made by tailscale-ops are removed; anything else is reported and skipped.")
         if not yes:
             answer = ask(f"Type yes to roll back on {self.target}: ")
             if answer.strip() != "yes":

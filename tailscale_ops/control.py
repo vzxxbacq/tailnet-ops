@@ -138,7 +138,7 @@ class Deployment(Procedure):
             return
         cf, zone = self._cloudflare()
         gone = cf.delete_record(zone, self.region.domain, self.dns_mark)
-        self.out(f"    Cloudflare: deleted {gone} record(s) {self.region.domain} made by tailnet-ops")
+        self.out(f"    Cloudflare: deleted {gone} record(s) {self.region.domain} made by tailscale-ops")
 
     def _run_binary(self):
         arch = self.facts.get("arch")
@@ -265,7 +265,7 @@ class Deployment(Procedure):
             Step(
                 1, "Preflight",
                 ["Check arch, OS, root, systemd and tools; that the configured ports are free or ours;",
-                 "that nothing named headscale exists unless tailnet-ops made it. Changes nothing."],
+                 "that nothing named headscale exists unless tailscale-ops made it. Changes nothing."],
                 [Action(host, "read-only checks", scripts.PREFLIGHT, "control", True)],
                 rollback_note="none needed (read-only)", read_only=True, run=self._run_preflight,
                 brief="Check the host",
@@ -288,7 +288,7 @@ class Deployment(Procedure):
             Step(
                 3, "User and directories",
                 [f"Create the system user and group headscale, {render.ETC}/tls/ and {render.LIB}/,",
-                 "and mark both directories as made by tailnet-ops."],
+                 "and mark both directories as made by tailscale-ops."],
                 [Action(host, "create", scripts.USER_AND_DIRS, "control", True)],
                 rollback=scripts.ROLLBACK_USER_AND_DIRS,
                 rollback_note=f"remove {render.ETC} and {render.LIB} (with the database) and the user, if ours",
@@ -441,7 +441,7 @@ class Deployment(Procedure):
         official = "on (fallback)" if r.official_derp else "off: devices use only this region's relay"
         avoid = f" · avoids {', '.join(r.avoid_prefixes)}" if r.avoid_prefixes else ""
         return "\n".join([
-            f"Region {r.name} of site {site.name!r} · tailnet-ops {VERSION} · Headscale {pins.HEADSCALE_VERSION}",
+            f"Region {r.name} of site {site.name!r} · tailscale-ops {VERSION} · Headscale {pins.HEADSCALE_VERSION}",
             f"  control host  {r.control_host}  (scripts run as root over SSH)",
             f"  checker host  {r.check_from}  (read-only checks as its login user)",
             f"  server_url    {r.server_url}",

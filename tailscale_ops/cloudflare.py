@@ -27,7 +27,7 @@ class CloudflareError(Exception):
 def _http(method, url, token, body=None, timeout=30):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method=method, headers={
-        "Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "tailnet-ops"})
+        "Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "tailscale-ops"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, r.read()

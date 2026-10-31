@@ -10,10 +10,10 @@ import subprocess
 import unittest
 from unittest import mock
 
-from tailnet_ops import apple, join, pins, targets
-from tailnet_ops.appjoin import AppJoin
-from tailnet_ops.procedure import StepError
-from tailnet_ops.remote import Result
+from tailscale_ops import apple, join, pins, targets
+from tailscale_ops.appjoin import AppJoin
+from tailscale_ops.procedure import StepError
+from tailscale_ops.remote import Result
 from tests.helpers import FakeRunner, TempDirTest, bash, run_bash
 
 # A throwaway certificate whose key was never kept.
@@ -307,7 +307,7 @@ class AppJoinTest(TempDirTest):
     def test_wait_gives_up(self):
         job = self.job(Runner(AppJoinTest.responses(nodes=[])))
         clock = iter(range(0, 10 ** 6, 600))
-        from tailnet_ops import appjoin
+        from tailscale_ops import appjoin
         real = appjoin.time.monotonic
         appjoin.time.monotonic = lambda: next(clock)
         try:

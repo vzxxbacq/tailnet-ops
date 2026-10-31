@@ -3,9 +3,9 @@ import io
 import os
 from unittest import mock
 
-from tailnet_ops import cli, init, remote
-from tailnet_ops import site as sitemod
-from tailnet_ops.remote import Result
+from tailscale_ops import cli, init, remote
+from tailscale_ops import site as sitemod
+from tailscale_ops.remote import Result
 from tests import test_init
 from tests.helpers import TempDirTest
 
@@ -125,7 +125,7 @@ class CliTest(TempDirTest):
         self.assertEqual(rc, 0, err)
         self.assertIn("air → a Mac with the Tailscale app, personal device of owner in ovs, cn; starts on ovs", out)
         self.assertIn("Write the app's profile", out)
-        with mock.patch("tailnet_ops.targets.this_machine_name", return_value="here-mac"):
+        with mock.patch("tailscale_ops.targets.this_machine_name", return_value="here-mac"):
             rc, out, err = run_cli("join", "plan", "--app", "--offline", "--site", str(self.site))
         self.assertEqual(rc, 0, err)
         self.assertIn("here-mac → this Mac with the Tailscale app", out)       # no name: this machine

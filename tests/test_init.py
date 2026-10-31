@@ -1,7 +1,7 @@
 import tomllib
 import unittest
 
-from tailnet_ops import init, site as sitemod
+from tailscale_ops import init, site as sitemod
 
 CN_EDGE = """uid=0
 root=yes

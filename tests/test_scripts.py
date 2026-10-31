@@ -9,9 +9,9 @@ import threading
 import unittest
 from pathlib import Path
 
-from tailnet_ops import pki, render, scripts
-from tailnet_ops.control import CA_PLACEHOLDER, CERT_PLACEHOLDER, Deployment
-from tailnet_ops.site import Region
+from tailscale_ops import pki, render, scripts
+from tailscale_ops.control import CA_PLACEHOLDER, CERT_PLACEHOLDER, Deployment
+from tailscale_ops.site import Region
 from tests.helpers import TempDirTest, bash, run_bash
 from tests.test_pki import host_key_and_csr
 from tests.test_stun import FakeStunServer
@@ -33,7 +33,7 @@ STUBS = {
 
 
 def all_scripts(dep):
-    """(name, full script) for everything tailnet-ops can send to a host."""
+    """(name, full script) for everything tailscale-ops can send to a host."""
     out = []
     for step in dep.steps():
         for i, action in enumerate(step.actions):

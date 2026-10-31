@@ -6,12 +6,12 @@ import struct
 import subprocess
 import threading
 
-from tailnet_ops import entry, entry_dns, firewall, guard, scripts, wgkey
-from tailnet_ops import site as sitemod
-from tailnet_ops.control import Deployment
-from tailnet_ops.phone import Phones, clash_yaml, phone_hosts, wg_conf
-from tailnet_ops.procedure import StepError
-from tailnet_ops.remote import Result
+from tailscale_ops import entry, entry_dns, firewall, guard, scripts, wgkey
+from tailscale_ops import site as sitemod
+from tailscale_ops.control import Deployment
+from tailscale_ops.phone import Phones, clash_yaml, phone_hosts, wg_conf
+from tailscale_ops.procedure import StepError
+from tailscale_ops.remote import Result
 from tests.helpers import FakeRunner, TempDirTest, bash, example_text
 from tests.test_control import FakeOps, responses
 
@@ -399,7 +399,7 @@ class PhoneTest(TempDirTest):
         self.assertIn("hosts: {}", clash_yaml(self.site, "p", "K", "10.255.254.2", [(cn, ENTRY_PUB)], []))
 
     def test_cli_list(self):
-        from tailnet_ops import cli
+        from tailscale_ops import cli
         sitemod.write_phones(self.site.directory, {"iphone": {"address": "10.255.254.2", "public_key": ENTRY_PUB}})
         rows = Phones(sitemod.load(self.site.directory, known_host=lambda a: True), None).rows()
         self.assertEqual(rows[1], ("iphone", "10.255.254.2", "none yet"))

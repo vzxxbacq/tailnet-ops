@@ -1,6 +1,6 @@
 import subprocess
 
-from tailnet_ops import pki
+from tailscale_ops import pki
 from tests.helpers import TempDirTest
 
 

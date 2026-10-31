@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tailnet_ops import cloudflare, site as sitemod
-from tailnet_ops.remote import RemoteError, Result
+from tailscale_ops import cloudflare, site as sitemod
+from tailscale_ops.remote import RemoteError, Result
 
 
 def _no_cloudflare(method, url, token, body=None, timeout=30):

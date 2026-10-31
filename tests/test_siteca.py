@@ -4,9 +4,9 @@ import io
 import ssl
 import urllib.error
 
-from tailnet_ops import join, siteca, tui
-from tailnet_ops.cli import ca_asker
-from tailnet_ops.appjoin import AppJoin
+from tailscale_ops import join, siteca, tui
+from tailscale_ops.cli import ca_asker
+from tailscale_ops.appjoin import AppJoin
 from tests.helpers import FakeRunner, TempDirTest
 from tests.test_apple import CA, AppJoinTest, Runner
 from tests.test_join import FakeOps, responses

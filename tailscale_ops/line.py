@@ -188,7 +188,7 @@ def conf(line, side, peer_public_key, remote_alias):
 
 
 def nft_rules(line, side, local_prefix, local_alias, local_tsip):
-    """tailnet-ops's own table: NAT both ways for this end."""
+    """tailscale-ops's own table: NAT both ways for this end."""
     me = line.tunnel_addresses[0 if side == "initiator" else 1]
     t, i = table_name(line), line.interface
     return f"""# tailnet-ops line={line.name} side={side}
@@ -667,7 +667,7 @@ class Line(Procedure):
             f"{rr.name} hosts appear in {ri.name} as {rr.alias_net}",
             f"  routes        {ln.initiator} advertises {rr.alias_net} into {ri.name}; "
             f"{ln.responder} advertises {ri.alias_net} into {rr.name}",
-            f"  NAT           in tailnet-ops's own nft table {table_name(ln)} on both ends",
+            f"  NAT           in tailscale-ops's own nft table {table_name(ln)} on both ends",
         ]
         targets = (checks or {}).get("targets") or {}
         found = []
