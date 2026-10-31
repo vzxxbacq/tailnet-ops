@@ -354,9 +354,14 @@ class JoinTest(AppCase):
                 with self.assertRaises(Refused) as cm:
                     self.app.join_script(name, reason)
                 self.assertIn(problem, str(cm.exception))
-        self.script()
+
+    def test_a_new_join_command_replaces_one_not_run(self):
+        first = self.script()["script_id"]
+        out = self.script()
+        self.assertIn("earlier join command", out["next"])
         with self.assertRaises(Refused):
-            self.script()
+            self.app.script(first)
+        self.assertTrue(self.app.script(out["script_id"]))
 
     def test_the_machine_hands_over_its_login(self):
         sid = self.script()["script_id"]
@@ -620,6 +625,9 @@ class LeaveTest(AppCase):
         with self.assertRaises(Refused):
             self.app.login(sid, MACHINE, "198.51.100.7")             # a leave command logs nothing in
         self.assertIn('TN_MODE=user bash "$f"', out["command_without_root"])
+        self.assertEqual(self.app.status(sid)["status"], "downloaded")
+        with self.assertRaises(Refused):
+            self.app.script(sid)                                     # once only
         self.app.leave_template = ""
         with self.assertRaises(Refused):
             self.app.leave_script("web1")
@@ -636,6 +644,13 @@ class LeaveTest(AppCase):
         self.app.resume_template = ""
         with self.assertRaises(Refused):
             self.app.resume_script("web1")
+
+    def test_a_leave_command_does_not_hold_up_joining_again(self):
+        sid = self.app.leave_script("web9")["command"].split("/join/", 1)[1].split("'", 1)[0]
+        self.assertEqual(self.app.status(sid)["status"], "waiting_for_machine")
+        self.assertEqual(self.app.join_script("web9", "back in")["name"], "web9")   # not run yet: no matter
+        self.app.script(sid)
+        self.assertEqual(self.app.status(sid)["status"], "downloaded")
 
     def test_requests_from_before_still_check(self):
         """A join request saved before this version keeps its digest: the join keys did not change."""

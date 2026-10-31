@@ -44,6 +44,8 @@ itself serves. You never hold a key that changes the tailnet, and you cannot app
 1. Pick its name: lower case a-z, 0-9 and `-`, starting with a letter, not already in `list_nodes`.
 2. Call `join_script` with the name and a one-line reason ("web server for the blog, asked by the
    owner today"). It returns a `command` and a `script_id`; the command works once, for 30 minutes.
+   If you lost it, call `join_script` again: the new command replaces the one not run. A leave or
+   resume command never holds up a join, and its link can be fetched only once.
 3. Run the `command` on the machine as root over SSH (drop `sudo` when you are root). It checks the
    machine, installs the pinned Tailscale (checked by sha256), starts tailscaled with logging to
    Tailscale off, hands the machine's login to the server itself, and prints

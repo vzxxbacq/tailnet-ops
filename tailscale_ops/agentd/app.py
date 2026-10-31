@@ -131,7 +131,8 @@ class App:
         now = self.clock()
         self.scripts = {k: v for k, v in self.scripts.items()
                         if v["expires"] > now or (v["request"] and v["expires"] > now - 86400)}
-        return {k: v for k, v in self.scripts.items() if v["expires"] > now and not v["request"]}
+        return {k: v for k, v in self.scripts.items()
+                if v["expires"] > now and not v["request"] and not v.get("downloaded")}
 
     # --- MCP: read --------------------------------------------------------------------
 
@@ -163,26 +164,30 @@ class App:
         name = self._name(name)
         with self.lock:
             live = self._live_scripts()
-            if any(s["name"] == name for s in live.values()):
-                raise Refused(f"a join command for {name} is out already; run that one")
-            if len(live) >= MAX_SCRIPTS:
-                raise Refused(f"{MAX_SCRIPTS} join commands are out and not run yet; wait for them to expire")
+            # One join command per name: a new one replaces one that was not run (the Agent may have lost it).
+            replaced = [k for k, s in live.items() if s.get("kind", "join") == "join" and s["name"] == name]
+            for k in replaced:
+                del self.scripts[k]
+            if len(live) - len(replaced) >= MAX_SCRIPTS:
+                raise Refused(f"{MAX_SCRIPTS} commands are out and not run yet; wait for them to expire")
             sid = webauthn.b64url(self.random(18))
             text = (self.template.replace("__TN_NAME__", name).replace("__TN_TAGS__", ",".join(self.tags))
                     .replace("__TN_SCRIPT__", sid))
-            self.scripts[sid] = {"name": name, "tags": self.tags, "reason": reason, "who": _plain(who, 80),
-                                 "text": text, "expires": self.clock() + SCRIPT_SECONDS, "request": None}
+            self.scripts[sid] = {"kind": "join", "name": name, "tags": self.tags, "reason": reason,
+                                 "who": _plain(who, 80), "text": text, "expires": self.clock() + SCRIPT_SECONDS,
+                                 "request": None}
         url = f"{self.origin}/join/{sid}"
         digest = sha256_hex(text)
         command = (f"f=$(mktemp) && curl -fsS --max-time 60 -o \"$f\" '{url}' && "
                    f"echo \"{digest}  $f\" | sha256sum -c - && sudo bash \"$f\"; rm -f \"$f\"")
-        self.store.audit("script", script=sid, name=name, who=_plain(who, 80))
+        self.store.audit("script", script=sid, name=name, who=_plain(who, 80), replaced=replaced)
         user_mode = (f"f=$(mktemp) && curl -fsS --max-time 60 -o \"$f\" '{url}' && "
                      f"echo \"{digest}  $f\" | sha256sum -c - && TN_MODE=user bash \"$f\"; rm -f \"$f\"")
         return {
             "script_id": sid, "region": self.region, "name": name, "tags": self.tags, "command": command,
             "command_without_root": user_mode, "sha256": digest, "expires_in_minutes": SCRIPT_SECONDS // 60,
-            "next": "Run `command` once on the machine over SSH (drop `sudo` when you are root). Without root or "
+            "next": (f"The earlier join command for {name} no longer works. " if replaced else "") +
+                    "Run `command` once on the machine over SSH (drop `sudo` when you are root). Without root or "
                     "systemd (a container, a sandbox), run `command_without_root` instead: the same pinned "
                     "Tailscale runs as the user, in userspace networking, and other programs reach the tailnet "
                     "through the SOCKS5/HTTP proxy it prints (TN-PROXY). Either way the script hands its login "
@@ -191,10 +196,14 @@ class App:
         }
 
     def script(self, sid):
+        """The script behind a command. A join script can be fetched again until the machine hands over its
+        login; a leave or resume script once, since nothing else tells when it ran."""
         with self.lock:
             entry = self._live_scripts().get(str(sid or ""))
-        if entry is None:
-            raise Refused("this join link is not valid (any more); ask the Agent for a new join command")
+            if entry is None:
+                raise Refused("this link is not valid (any more); ask the Agent for a new command")
+            if entry.get("kind", "join") != "join":
+                entry["downloaded"] = int(self.clock())
         return entry["text"]
 
     def login(self, sid, answer, ip):
@@ -307,11 +316,17 @@ class App:
         with self.lock:
             entry = self.scripts.get(rid)
         if entry is not None:
+            kind = entry.get("kind", "join")
             if entry["request"] is None:
+                if entry.get("downloaded"):
+                    return {"script_id": rid, "kind": kind, "status": "downloaded", "name": entry["name"],
+                            "next": f"The machine fetched the {kind} script; its own output says how it went "
+                                    f"(the last line is {'TN-LEFT' if kind == 'leave' else 'TN-JOINED'} when it worked)."}
                 if entry["expires"] <= self.clock():
-                    raise Refused("that join command expired before the machine ran it")
-                return {"script_id": rid, "status": "waiting_for_machine", "name": entry["name"],
-                        "next": "Run the join command on the machine; it prints TN-APPROVAL-URL."}
+                    raise Refused(f"that {kind} command expired before the machine ran it")
+                return {"script_id": rid, "kind": kind, "status": "waiting_for_machine", "name": entry["name"],
+                        "next": f"Run the {kind} command on the machine" +
+                                ("; it prints TN-APPROVAL-URL." if kind == "join" else ".")}
             rid = entry["request"]
         return self._public(self._request(rid))
 
