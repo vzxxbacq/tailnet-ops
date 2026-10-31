@@ -2,6 +2,7 @@
 
 import argparse
 import datetime
+import json
 import os
 import shutil
 import subprocess
@@ -683,18 +684,42 @@ def cmd_init(args):
     if tree is not None:
         print(f"refusing: {target.parent} sits inside the Git work tree {tree}", file=sys.stderr)
         return 1
-    print("tn init asks only what SSH cannot tell. Everything else comes from read-only SSH checks.")
     asker = init.Asker()
-    answers = init.ask_answers(asker)
+    if args.answers:
+        try:
+            text = sys.stdin.read() if args.answers == "-" else Path(args.answers).expanduser().read_text()
+            answers, problems = init.answers_from(json.loads(text))
+        except (OSError, ValueError) as e:
+            answers, problems = None, [f"{args.answers}: {e}"]
+        if problems:
+            print("The answers have problems; nothing was read over SSH:", file=sys.stderr)
+            for problem in problems:
+                print(f"  {problem}", file=sys.stderr)
+            return 1
+    else:
+        print("tn init asks only what SSH cannot tell. Everything else comes from read-only SSH checks.")
+        answers = init.ask_answers(asker)
     hosts = init.hosts_in(answers)
     hostnames = {h: remote.ssh_hostname_ipv4(h) for h in hosts}
-    for r in answers["regions"]:
-        if hostnames.get(r["control_host"]) is None:
-            r["public_ipv4"] = asker.ask(f"  {r['control_host']}: public IPv4 (its SSH HostName is not an address)",
-                                         None, init._check_ipv4)
-    for ln in answers["lines"]:
-        if hostnames.get(ln["initiator"]) is None:
-            ln["initiator_public_ipv4"] = asker.ask(f"  {ln['initiator']}: public IPv4", None, init._check_ipv4)
+    missing = []
+    for i, r in enumerate(answers["regions"]):
+        if hostnames.get(r["control_host"]) is None and not r.get("public_ipv4"):
+            if args.answers:
+                missing.append(f"regions[{i}].public_ipv4: {r['control_host']}'s SSH HostName is not an address")
+            else:
+                r["public_ipv4"] = asker.ask(f"  {r['control_host']}: public IPv4 (its SSH HostName is not an address)",
+                                             None, init._check_ipv4)
+    for i, ln in enumerate(answers["lines"]):
+        if hostnames.get(ln["initiator"]) is None and not ln.get("initiator_public_ipv4"):
+            if args.answers:
+                missing.append(f"lines[{i}].initiator_public_ipv4: {ln['initiator']}'s SSH HostName is not an address")
+            else:
+                ln["initiator_public_ipv4"] = asker.ask(f"  {ln['initiator']}: public IPv4", None, init._check_ipv4)
+    if missing:
+        print("Add these answers:", file=sys.stderr)
+        for m in missing:
+            print(f"  {m}", file=sys.stderr)
+        return 1
     runner = remote.SSHRunner()
     facts = {}
     print("\nReading facts over SSH (read-only):")
@@ -765,6 +790,8 @@ def build_parser():
 
     p = sub.add_parser("init", parents=[common], help="write site.toml from a few answers plus SSH facts")
     p.add_argument("--out", metavar="PATH", help="write here instead of <site>/site.toml")
+    p.add_argument("--answers", metavar="FILE", help="the answers as JSON instead of questions (- for stdin); "
+                                                    "for Agents, see skills/tailscale-ops-setup")
     p.add_argument("--yes", action="store_true", help="write without asking")
     p.set_defaults(func=cmd_init)
 

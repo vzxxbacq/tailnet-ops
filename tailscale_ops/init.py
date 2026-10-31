@@ -250,6 +250,90 @@ def _pick_ports(facts, allowed):
     return picks
 
 
+# `tn init --answers FILE`: the same answers as JSON, for an Agent that asked the owner in chat.
+# key -> (check, default); REQUIRED keys have no default. public_ipv4 and initiator_public_ipv4 are needed
+# only where the SSH HostName is not an address; agent_domain and entry_port go into the region as given.
+REQUIRED = object()
+
+
+def _check_site(a):
+    return None if re.match(r"^[A-Za-z0-9 ._-]{1,40}$", a) else "letters, digits, ' ', '.', '_' or '-'"
+
+
+def _check_port(a):
+    return None if isinstance(a, int) and not isinstance(a, bool) and 1 <= a <= 65535 else "a port number"
+
+
+def _check_bool(a):
+    return None if isinstance(a, bool) else "true or false"
+
+
+SITE_ANSWERS = {"site": (_check_site, "home"), "owner_user": (_check_user, "owner"),
+                "dns_suffix": (suffix_problem, "tailnet.internal"), "regions": (None, REQUIRED), "lines": (None, [])}
+REGION_ANSWERS = {
+    "name": (_check_region, REQUIRED), "control_host": (_check_alias, REQUIRED), "check_from": (_check_alias, REQUIRED),
+    "official_derp": (_check_bool, False), "ipv4_prefix": (_check_prefix, ""), "ports": (_check_ports, ""),
+    "domain": (_check_domain, ""), "public_ipv4": (_check_ipv4, None), "agent_domain": (_check_domain, None),
+    "entry_port": (_check_port, None),
+}
+LINE_ANSWERS = {
+    "name": (lambda v: None if HOST_RE.match(v) else "letters, digits, '.', '_' or '-'", REQUIRED),
+    "initiator": (_check_alias, REQUIRED), "responder": (_check_alias, REQUIRED),
+    "responder_entry_ipv4": (_check_ipv4, REQUIRED), "one_way": (_check_bool, True), "port": (_check_port, REQUIRED),
+    "initiator_public_ipv4": (_check_ipv4, None),
+}
+
+
+def _answer_table(where, given, spec, problems):
+    if not isinstance(given, dict):
+        problems.append(f"{where}: expected an object")
+        return {}
+    out = {}
+    for key in given:
+        if key not in spec:
+            problems.append(f"{where}.{key}: not a known answer ({', '.join(spec)})")
+    for key, (check, default) in spec.items():
+        if key not in given or given[key] is None:
+            if default is REQUIRED:
+                problems.append(f"{where}.{key}: needed")
+            elif default is not None:
+                out[key] = default
+            continue
+        value = given[key]
+        if key == "ports" and isinstance(value, list):
+            value = ",".join(str(p) for p in value)
+        if check is None:
+            problem = None                  # a list, checked by the caller
+        elif check is _check_port or check is _check_bool:
+            problem = check(value)
+        else:
+            problem = check(value) if isinstance(value, str) else "expected a string"
+        if problem:
+            problems.append(f"{where}.{key}: {problem}")
+        else:
+            out[key] = value
+    return out
+
+
+def answers_from(doc):
+    """(answers, problems): the answers ask_answers would give, from a JSON object."""
+    problems = []
+    a = _answer_table("answers", doc, SITE_ANSWERS, problems)
+    regions = a.get("regions")
+    if not isinstance(regions, list) or not regions:
+        problems.append("answers.regions: a list of at least one region")
+        regions = []
+    lines = a.get("lines") if isinstance(a.get("lines"), list) else []
+    if a.get("lines") is not None and not isinstance(a.get("lines"), list):
+        problems.append("answers.lines: a list")
+    a["regions"] = [_answer_table(f"regions[{i}]", r, REGION_ANSWERS, problems) for i, r in enumerate(regions)]
+    a["lines"] = [_answer_table(f"lines[{i}]", ln, LINE_ANSWERS, problems) for i, ln in enumerate(lines)]
+    for r in a["regions"]:
+        if "ports" in r:
+            r["ports"] = parse_ports(r["ports"])
+    return a, problems
+
+
 def hosts_in(answers):
     seen = []
     for r in answers["regions"]:
@@ -368,6 +452,12 @@ def derive(answers, facts, hostnames):
             region["domain"] = ra["domain"]
             comments[(table, "domain")] = (f"Let's Encrypt via Cloudflare DNS; its A record -> {public}, "
                                            "DNS only (not proxied)")
+        if ra.get("agent_domain"):
+            region["agent_domain"] = ra["agent_domain"]
+            comments[(table, "agent_domain")] = "tn-agent behind a Cloudflare tunnel: MCP and passkey approvals"
+        if ra.get("entry_port"):
+            region["entry_port"] = ra["entry_port"]
+            comments[(table, "entry_port")] = "UDP for the phone entry (WireGuard)"
         if metrics != pins.DEFAULT_METRICS_PORT:
             region["metrics_port"] = metrics
         if grpc != pins.DEFAULT_GRPC_PORT:

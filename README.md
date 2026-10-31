@@ -2,12 +2,16 @@
 
 快速搭建自建 Headscale 网络：按地区分成几个 tailnet，地区之间可以用专线相连，也支持只能由一侧发起连接的单向专线。代码可以公开复用；每个人的站点配置、证书和密钥只放在自己电脑的私有目录里。
 
+**让 Agent 帮你搭**：把仓库地址发给它，说“用 https://github.com/vzxxbacq/tailscale-ops 帮我组建内网”。Agent 按 [`skills/tailscale-ops-setup/SKILL.md`](skills/tailscale-ops-setup/SKILL.md) 先问你的需求，每一步征得你同意再装；装完把站点密钥交给你、撤掉它自己的 SSH 权限，有 Cloudflare 域名时，之后每次加入或退出机器都要你用 passkey 批准。
+
 > 独立的开源项目，与 Tailscale Inc. 无关，也未获其认可。Tailscale 是 Tailscale Inc. 的注册商标；本工具管理的是自建的 [Headscale](https://github.com/juanfont/headscale)，设备上用的是开源的 Tailscale 客户端。
 
 | 文件 | 内容 |
 | --- | --- |
 | [PLAN.md](PLAN.md) | 产品计划和第一阶段 |
-| [AGENTS.md](AGENTS.md) | 工作规则 |
+| [AGENTS.md](AGENTS.md) | 开发这个仓库的规则 |
+| [skills/tailscale-ops-setup/SKILL.md](skills/tailscale-ops-setup/SKILL.md) | 给 Agent 的搭建指南：问需求、安装、交接 |
+| [skills/tailscale-ops/SKILL.md](skills/tailscale-ops/SKILL.md) | 给 Agent 的日常指南：通过 tn-agent 加入、退出机器 |
 | [examples/site.example.toml](examples/site.example.toml) | 站点配置示例，用的是文档专用地址 |
 | [LICENSE](LICENSE) | MIT 许可证 |
 
@@ -104,6 +108,11 @@ Agent 管网络用 tn-agent（`tailscale_ops/agentd`，只用标准库，打成�
 tailscale-ops (`tn`) sets up self-hosted [Headscale](https://github.com/juanfont/headscale) networks: one tailnet
 per region, joined by dedicated lines, including one-way lines where only one side may start connections.
 It is Python 3.11+ with the standard library only, and drives your hosts over SSH.
+
+**With an Agent:** give it this repository's URL and ask it to set up your network. It follows
+[`skills/tailscale-ops-setup/SKILL.md`](skills/tailscale-ops-setup/SKILL.md): it asks what you need, installs
+step by step with your OK, then hands the site's keys to you and drops its own SSH access. With a domain on Cloudflare,
+every later join and leave waits for your passkey.
 
 tailscale-ops is an independent project, not affiliated with or endorsed by Tailscale Inc. Tailscale is a
 registered trademark of Tailscale Inc. It manages self-hosted Headscale; devices run the open-source Tailscale client.

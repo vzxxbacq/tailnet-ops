@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import os
 from unittest import mock
 
@@ -187,6 +188,35 @@ class InitCliTest(TempDirTest):
         self.assertEqual(rc, 0)
         self.assertIn("Same settings as the existing", out)
         self.assertEqual((d / "site.toml").read_text(), before)
+
+    def test_answers_from_a_file(self):
+        doc = {"site": "example",
+               "regions": [{"name": "cn", "control_host": "cn-edge", "check_from": "cn-probe",
+                            "ipv4_prefix": "100.64.10.0/24"}]}
+        answers, d = self.tmp / "answers.json", self.tmp / "newsite"
+        answers.write_text(json.dumps(doc))
+        rc, out, err = self.run_init("--site", str(d), "--answers", str(answers), "--yes", answers=[])
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("tn init asks", out)
+        rc, out, err = run_cli("site", "check", "--site", str(d))
+        self.assertEqual(rc, 0, err)
+
+    def test_bad_answers_stop_before_ssh(self):
+        answers = self.tmp / "answers.json"
+        answers.write_text(json.dumps({"regions": [{"name": "cn"}]}))
+        with mock.patch.object(remote.SSHRunner, "run", side_effect=AssertionError("no SSH")):
+            rc, _out, err = run_cli("init", "--site", str(self.tmp / "s"), "--answers", str(answers))
+        self.assertEqual(rc, 1)
+        self.assertIn("regions[0].control_host: needed", err)
+
+    def test_answers_name_a_missing_public_address(self):
+        answers = self.tmp / "answers.json"
+        answers.write_text(json.dumps({"regions": [{"name": "cn", "control_host": "cn-edge", "check_from": "cn-probe"}]}))
+        with mock.patch.object(remote.SSHRunner, "run", side_effect=AssertionError("no SSH")), \
+                mock.patch.object(remote, "ssh_hostname_ipv4", lambda h: None):
+            rc, _out, err = run_cli("init", "--site", str(self.tmp / "s"), "--answers", str(answers))
+        self.assertEqual(rc, 1)
+        self.assertIn("regions[0].public_ipv4: cn-edge's SSH HostName is not an address", err)
 
     def test_refuses_git_tree(self):
         (self.tmp / ".git").mkdir()

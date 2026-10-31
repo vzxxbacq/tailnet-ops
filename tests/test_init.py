@@ -103,6 +103,46 @@ class InitTest(unittest.TestCase):
     def answers(self):
         return init.ask_answers(init.Asker(scripted(ANSWERS), out=lambda s: None))
 
+    def test_answers_as_json_match_the_questions(self):
+        doc = {"site": "example",
+               "regions": [{"name": "cn", "control_host": "cn-edge", "check_from": "cn-probe",
+                            "ipv4_prefix": "100.64.10.0/24"},
+                           {"name": "ovs", "control_host": "ovs-edge", "check_from": "ovs-probe", "official_derp": True,
+                            "ports": "20000-20002", "domain": "hs-ovs.example.com"}],
+               "lines": [{"name": "l1", "initiator": "cn-edge", "responder": "ovs-edge",
+                          "responder_entry_ipv4": "203.0.113.30", "port": 11011}]}
+        answers, problems = init.answers_from(doc)
+        self.assertEqual(problems, [])
+        self.assertEqual(answers, self.answers())
+        data, _notes, _comments = init.derive(answers, facts(), HOSTNAMES)
+        self.assertEqual(data, EXPECTED)
+        doc["regions"][1]["ports"] = [20000, 20001, 20002]
+        self.assertEqual(init.answers_from(doc)[0]["regions"][1]["ports"], [20000, 20001, 20002])
+
+    def test_answers_for_tn_agent_and_phones(self):
+        answers, problems = init.answers_from({"regions": [{
+            "name": "ovs", "control_host": "ovs-edge", "check_from": "ovs-probe", "domain": "hs-ovs.example.com",
+            "agent_domain": "agent-ovs.example.com", "entry_port": 51820}]})
+        self.assertEqual(problems, [])
+        self.assertEqual((answers["site"], answers["owner_user"], answers["lines"]), ("home", "owner", []))
+        data, _notes, _comments = init.derive(answers, facts(), HOSTNAMES)
+        region = data["regions"]["ovs"]
+        self.assertEqual((region["agent_domain"], region["entry_port"]), ("agent-ovs.example.com", 51820))
+        sitemod.parse(data, known_host=lambda h: False)
+
+    def test_bad_answers_say_what_is_wrong(self):
+        _answers, problems = init.answers_from({
+            "site": "x", "regions": [{"name": "Not A Region", "control_host": "cn-edge", "prot": 1,
+                                      "official_derp": "yes", "entry_port": 70000}],
+            "lines": [{"name": "l1"}]})
+        text = "\n".join(problems)
+        for expected in ("regions[0].name:", "regions[0].check_from: needed", "regions[0].prot: not a known answer",
+                         "regions[0].official_derp: true or false", "regions[0].entry_port: a port number",
+                         "lines[0].initiator: needed", "lines[0].port: needed"):
+            self.assertIn(expected, text)
+        self.assertIn("answers.regions: a list of at least one region", init.answers_from({})[1])
+        self.assertIn("answers: expected an object", init.answers_from([])[1])
+
     def test_parse_facts(self):
         f = init.parse_facts(CN_EDGE)
         self.assertEqual(f.root, "yes")

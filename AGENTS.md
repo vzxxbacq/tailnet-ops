@@ -1,5 +1,8 @@
 # Working rules
 
+Asked to set up a network with tailscale-ops, not to change this repository? Then follow
+`skills/tailscale-ops-setup/SKILL.md` and its rules; the rules below are for working on the repository.
+
 - tailscale-ops is a reusable tool, and this repository must stay publishable. Never commit site data:
   - real addresses or a real site's host names;
   - inventories, keys, auth keys or tokens;
