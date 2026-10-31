@@ -162,8 +162,7 @@ if [ "$mode" = user ]; then tn_user_install "$stage"; else tn_install_binaries "
 # tailscaled in each. User mode is for a machine without root or without systemd/OpenRC (a container, a
 # sandbox): the same pinned build runs as the user, in userspace networking, from the user's own directory,
 # and other programs reach the tailnet through its SOCKS5/HTTP proxy on localhost.
-MACHINE_MODE = r"""UDIR=${TN_DIR:-${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/tailnet-ops/tailscale-$REGION}
-SOCKS=${TN_SOCKS:-1055}
+MACHINE_MODE = r"""SOCKS=${TN_SOCKS:-1055}
 mode=${TN_MODE:-}
 if [ -z "$mode" ]; then
   if [ "$(id -u)" = 0 ] && { [ -d /run/systemd/system ] || command -v openrc-run >/dev/null 2>&1; }; then
@@ -173,6 +172,32 @@ if [ -z "$mode" ]; then
   fi
 fi
 case "$mode" in system|user) ;; *) die "TN_MODE is system or user" ;; esac
+# User mode keeps all of Tailscale in one directory: TN_DIR; else the first of these that holds this
+# machine's install already; else the first where programs may run (a home can be mounted noexec).
+user_dirs=("${XDG_STATE_HOME:-${HOME:-/nonexistent}/.local/state}/tailnet-ops/tailscale-$REGION"
+           "${TMPDIR:-/tmp}/tailnet-ops-$(id -u)/tailscale-$REGION")
+can_exec() {
+  local d=$1 t
+  while [ ! -d "$d" ]; do d=$(dirname "$d"); done
+  [ -w "$d" ] || return 1
+  t=$(mktemp "$d/.tn-exec.XXXXXX" 2>/dev/null) || return 1
+  printf '#!/bin/sh\nexit 0\n' > "$t" && chmod 0700 "$t"
+  if "$t" 2>/dev/null; then rm -f "$t"; return 0; fi
+  rm -f "$t"
+  return 1
+}
+UDIR=${TN_DIR:-}
+if [ "$mode" = user ] && [ -z "$UDIR" ]; then
+  for d in "${user_dirs[@]}"; do
+    if [ -f "$d/.tailnet-ops" ] && [ "$(cat "$d/.tailnet-ops")" = "$MARK" ]; then UDIR=$d; break; fi
+  done
+  if [ -z "$UDIR" ]; then
+    for d in "${user_dirs[@]}"; do
+      if can_exec "$d"; then UDIR=$d; break; fi
+    done
+  fi
+  UDIR=${UDIR:-${user_dirs[0]}}
+fi
 ts_args=()
 if [ "$mode" = user ]; then
   TS_BIN="$UDIR/tailscale"
@@ -223,9 +248,8 @@ for c in curl sha256sum tar install; do command -v "$c" >/dev/null || missing="$
 if [ -z "$missing" ]; then pass "tools: curl sha256sum tar install"; else flag "missing tools:$missing"; fi
 pass "user mode: Tailscale runs as $(id -un), in userspace networking, from $UDIR"
 if [ -e "$UDIR" ] && ! ours_udir; then flag "$UDIR exists and is not tailnet-ops's (set TN_DIR elsewhere)"; fi
-parent=$(dirname "$UDIR")
-while [ ! -d "$parent" ]; do parent=$(dirname "$parent"); done
-if [ -w "$parent" ]; then pass "can write under $parent"; else flag "cannot write under $parent: set TN_DIR"; fi
+if can_exec "$UDIR"; then pass "programs can run from $UDIR"
+else flag "programs cannot run from $UDIR (not writable, or mounted noexec): set TN_DIR to a directory where they can"; fi
 if command -v ss >/dev/null && [ -n "$(ss -H -ltn "sport = :$SOCKS" 2>/dev/null)" ] && ! user_running; then
   flag "tcp/$SOCKS on localhost is in use: set TN_SOCKS to a free port"
 fi
@@ -360,7 +384,8 @@ fi"""
         f"tailscale-ops {VERSION}: join this machine to tailnet {region.name} ({region.server_url}) as {NAME_SLOT}.",
         f"Run once. As root with systemd or OpenRC it installs Tailscale {pins.TAILSCALE_VERSION} (sha256 pinned) as a",
         "service; otherwise (or with TN_MODE=user) it runs the same build as the user, in userspace networking,",
-        "from TN_DIR (default ~/.local/state/tailnet-ops/tailscale-<region>). Then it hands the login to tn-agent",
+        "from TN_DIR (default ~/.local/state/tailnet-ops/tailscale-<region>, or under $TMPDIR or /tmp where the home",
+        "does not let programs run). Then it hands the login to tn-agent",
         "and prints TN-APPROVAL-URL: the page where the owner approves it with a passkey.",
     ], parts, main)
 

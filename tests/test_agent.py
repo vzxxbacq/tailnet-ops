@@ -541,6 +541,33 @@ class UserModeTest(TempDirTest):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("join this machine again", p.stderr)
 
+    def where(self, home_writable=True):
+        """The directory the scripts pick when TN_DIR is not set."""
+        script = self.resume.replace("\ntn_resume\n", '\necho "UDIR=$UDIR"\n')
+        env = dict(self.env(), HOME=str(self.tmp / "h"), TMPDIR=str(self.tmp / "t"))
+        del env["TN_DIR"]
+        (self.tmp / "h").mkdir(exist_ok=True)
+        (self.tmp / "t").mkdir(exist_ok=True)
+        (self.tmp / "h").chmod(0o700 if home_writable else 0o500)
+        try:
+            p = run_bash(script, env=env)
+        finally:
+            (self.tmp / "h").chmod(0o700)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        return p.stdout.strip().rsplit("UDIR=", 1)[1]
+
+    def test_picks_a_directory_where_programs_run(self):
+        uid = os.getuid()
+        self.assertEqual(self.where(), f"{self.tmp}/h/.local/state/tailnet-ops/tailscale-ovs")
+        # a home where nothing may be written or run (as one mounted noexec): $TMPDIR instead
+        self.assertEqual(self.where(home_writable=False), f"{self.tmp}/t/tailnet-ops-{uid}/tailscale-ovs")
+        self.assertEqual(list((self.tmp / "h").iterdir()), [])      # the probe left nothing behind
+        # leave and resume find the install where the join put it, even if the home works again later
+        installed = self.tmp / "t" / f"tailnet-ops-{uid}" / "tailscale-ovs"
+        installed.mkdir(parents=True)
+        (installed / ".tailnet-ops").write_text(join.marker(self.site.regions["ovs"], "web1") + "\n")
+        self.assertEqual(self.where(), str(installed))
+
     def test_a_directory_that_is_not_ours_is_left_alone(self):
         (self.udir / ".tailnet-ops").write_text("someone else\n")
         p = self.run_script(self.join)

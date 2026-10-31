@@ -7,7 +7,7 @@ the owner's passkey on the approval page.
 import json
 
 from . import VERSION
-from .app import Refused
+from .app import WAIT_SECONDS, Refused
 from .headscale import HeadscaleError
 
 PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -40,8 +40,11 @@ TOOLS = [
           {"name": NAME, "reason": REASON}, ("name", "reason"), read_only=False),
     _tool("request_status", "Check a join or a leave",
           "waiting_for_machine, pending, done, denied, expired or failed; when a join is done, the machine's "
-          "tailnet address. Takes the script_id from join_script, or a request id.",
-          {"request_id": {"type": "string", "description": "the script_id from join_script, or a request id"}},
+          "tailnet address. Takes the script_id from join_script, or a request id. With wait_seconds, a pending "
+          "request is answered the moment the owner decides: call it right after you send the approval link.",
+          {"request_id": {"type": "string", "description": "the script_id from join_script, or a request id"},
+           "wait_seconds": {"type": "integer", "minimum": 0, "maximum": WAIT_SECONDS,
+                            "description": f"wait up to this long for the owner's decision (at most {WAIT_SECONDS})"}},
           ("request_id",)),
     _tool("request_leave", "Ask the owner to take a machine out",
           "Ask the owner to remove a machine that joined through join_script (it carries the region's agent tag); "
@@ -92,7 +95,7 @@ def call_tool(app, name, args, who):
         if name == "join_script":
             return _text(app.join_script(args.get("name"), args.get("reason"), who))
         if name == "request_status":
-            return _text(app.status(args.get("request_id")))
+            return _text(app.status(args.get("request_id"), args.get("wait_seconds", 0)))
         if name == "request_leave":
             return _text(app.request_leave(args.get("name"), args.get("reason"), who))
         if name == "leave_script":

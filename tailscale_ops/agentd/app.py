@@ -26,6 +26,7 @@ AUTH_ID = r"hskey-authreq-[A-Za-z0-9_-]{24}"
 REQUEST_SECONDS = 14 * 60      # Headscale keeps a pending login for 15 minutes
 CHALLENGE_SECONDS = 3 * 60
 SCRIPT_SECONDS = 30 * 60
+WAIT_SECONDS = 50              # the longest request_status waits for the owner: well inside Cloudflare's 100 s
 MAX_PENDING = 10               # requests waiting for the owner
 MAX_SCRIPTS = 20               # join commands not run yet
 MAX_TOKENS = 20                # MCP tokens made on the token page
@@ -75,6 +76,7 @@ class App:
         self.clock = clock
         self.random = random
         self.lock = threading.Lock()
+        self.decided = threading.Condition()   # notified when the owner decides a request
         self.scripts = {}       # script id -> {name, tags, reason, who, text, expires, request}
         self.enrolments = {}    # sha256 of an enrolment code -> (challenge, expires)
         self.token_challenges = {}   # challenge (base64url) -> (action, subject, expires)
@@ -191,8 +193,8 @@ class App:
                     "systemd (a container, a sandbox), run `command_without_root` instead: the same pinned "
                     "Tailscale runs as the user, in userspace networking, and other programs reach the tailnet "
                     "through the SOCKS5/HTTP proxy it prints (TN-PROXY). Either way the script hands its login "
-                    "to the service itself and prints TN-APPROVAL-URL. Send that link to the owner, and check "
-                    "request_status with this script_id.",
+                    "to the service itself and prints TN-APPROVAL-URL. Send that link to the owner, then wait "
+                    f"for their decision with request_status (this script_id, wait_seconds {WAIT_SECONDS}).",
         }
 
     def script(self, sid):
@@ -310,8 +312,27 @@ class App:
                 "sha256": digest, "expires_in_minutes": SCRIPT_SECONDS // 60,
                 "next": next_step + " Use command_without_root where the join ran without root."}
 
-    def status(self, rid):
-        """A request by its id, or by the script id of the join command that made it."""
+    def status(self, rid, wait=0):
+        """A request by its id, or by the script id of the command that made it. With wait (seconds, at most
+        WAIT_SECONDS), a request that waits for the owner is answered as soon as they decide."""
+        try:
+            wait = max(0.0, min(float(wait or 0), WAIT_SECONDS))
+        except (TypeError, ValueError):
+            raise Refused("wait_seconds is a number of seconds")
+        deadline = time.monotonic() + wait
+        while True:
+            out = self._status(rid)
+            left = deadline - time.monotonic()
+            if out["status"] not in ("pending", "approved") or left <= 0:
+                return out
+            with self.decided:
+                self.decided.wait(min(left, 5))   # woken by a decision; looks again every 5 s regardless
+
+    def _decided(self):
+        with self.decided:
+            self.decided.notify_all()
+
+    def _status(self, rid):
         rid = str(rid or "")
         with self.lock:
             entry = self.scripts.get(rid)
@@ -370,9 +391,13 @@ class App:
         leave = out["kind"] == "leave"
         out["next"] = {
             "pending": "Send approval_url to the owner as a plain link and ask them to approve it with their "
-                       "passkey. Do not say it is approved. Check request_status every 20-30 seconds.",
-            "done": ("The machine is out of the tailnet. To remove Tailscale from it, run the leave_script command "
-                     "on it." if leave else "The machine is in the tailnet. Check with `tailscale status` on it."),
+                       "passkey. Do not say it is approved. Then, in the same turn, call request_status with "
+                       f"wait_seconds {WAIT_SECONDS}, again while it says pending: it answers the moment the owner "
+                       "decides, so you can tell them how it went without being asked.",
+            "done": ("The machine is out of the tailnet. Tell the owner. To remove Tailscale from it, run the "
+                     "leave_script command on it." if leave else
+                     "The machine is in the tailnet at the address in result. Tell the owner. In user mode, other "
+                     "programs on it reach the tailnet through the proxy the script printed (TN-PROXY)."),
             "denied": "The owner denied it. Do not retry unless the owner asks.",
             "expired": ("Nobody approved it in time. Ask the owner before asking again." if leave else
                         "Nobody approved it in time. Ask the owner before trying again with a new join command."),
@@ -445,6 +470,7 @@ class App:
                 req["status"] = "denied"
                 self.store.save_request(req)
                 self.store.audit("denied", request=req["id"], credential=cred["id"])
+                self._decided()
                 return self._public(req)
             req["status"] = "approved"
             self.store.save_request(req)
@@ -457,6 +483,7 @@ class App:
             self.store.save_request(req)
             self.store.audit(req["status"], request=req["id"], **({"error": req["error"]} if req.get("error") else
                                                                     {"node": req["result"]}))
+            self._decided()
             return self._public(req)
 
     def _leave(self, req):

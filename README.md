@@ -83,7 +83,7 @@ Agent 管网络用 tn-agent（`tailscale_ops/agentd`，只用标准库，打成�
 
 | | 怎么做 |
 | --- | --- |
-| Agent 能做的 | `list_nodes` 看节点；`join_script` 拿一条一次性命令，在它能 SSH 上的 Linux 机器上以 root 运行：装固定版本的 Tailscale，由这台机器自己把登录请求交给 tn-agent，打印审批链接；`request_status` 查结果；`request_leave` 申请让一台机器退出（只限通过 tn-agent 入网、带 `tag:<区>-agent` 的机器；你用 passkey 批准后，tn-agent 删掉这个节点），`leave_script` 给一条命令，在那台机器上卸掉 tn 装的 Tailscale；`resume_script` 在重启后用机器自己的密钥把 Tailscale 重新拉起来，不用再审批。没有 root 或 systemd 的机器（容器、沙箱）用 `command_without_root`：同一个固定版本以普通用户跑在用户目录里（userspace networking），其他程序通过它打印的 SOCKS5/HTTP 代理 `localhost:1055` 访问内网 |
+| Agent 能做的 | `list_nodes` 看节点；`join_script` 拿一条一次性命令，在它能 SSH 上的 Linux 机器上以 root 运行：装固定版本的 Tailscale，由这台机器自己把登录请求交给 tn-agent，打印审批链接；`request_status` 查结果（带 `wait_seconds` 时，你一批准就立即返回，Agent 不用等你在聊天里告诉它）；`request_leave` 申请让一台机器退出（只限通过 tn-agent 入网、带 `tag:<区>-agent` 的机器；你用 passkey 批准后，tn-agent 删掉这个节点），`leave_script` 给一条命令，在那台机器上卸掉 tn 装的 Tailscale；`resume_script` 在重启后用机器自己的密钥把 Tailscale 重新拉起来，不用再审批。没有 root 或 systemd 的机器（容器、沙箱）用 `command_without_root`：同一个固定版本以普通用户运行（userspace networking），装在主目录；主目录不能执行程序时自动改用 `$TMPDIR` 或 `/tmp`，其他程序通过它打印的 SOCKS5/HTTP 代理 `localhost:1055` 访问内网 |
 | 你批准 | 打开审批链接（页面由控制机自己提供），核对登录请求来自的公网 IP、机器报告的主机名和系统，用 passkey 批准或拒绝。签名的是这一个请求的摘要，用一次就作废；请求 14 分钟内没批就过期 |
 | 批准之后 | tn-agent 运行 `headscale auth register`，再把名字和 tag 改回批准的那样。这台机器带 `tag:<区>-agent`：别的机器能连它，它不能主动连别的机器 |
 | Agent 拿不到的 | 任何入网密钥、登录链接、API key、站点目录；它不能批准、删除节点、改 tag 或改策略 |

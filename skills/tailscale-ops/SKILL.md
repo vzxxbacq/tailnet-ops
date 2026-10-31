@@ -53,16 +53,21 @@ itself serves. You never hold a key that changes the tailnet, and you cannot app
    it does not own.
    **Without root, or without systemd/OpenRC** (a container, a sandbox), run `command_without_root`
    instead, as the user who will use the tailnet. The same pinned build runs from that user's
-   directory (`TN_DIR`, default `~/.local/state/tailnet-ops/tailscale-<region>`), in userspace
-   networking: no network device is made, so other programs reach the tailnet through the proxy it
+   directory, in userspace networking. The script picks `~/.local/state/tailnet-ops/tailscale-<region>`,
+   or a directory under `$TMPDIR` or `/tmp` when the home does not let programs run; leave and resume
+   find it again. Set `TN_DIR` only if neither works (the preflight says so). In userspace
+   networking no network device is made, so other programs reach the tailnet through the proxy it
    prints, `TN-PROXY socks5h://localhost:1055` (`TN_SOCKS` picks another port). Do not assemble a
    user-mode setup by hand: the script does it, and leave and resume know where to find it.
 4. Send the approval link to the owner, for example: "Please approve <name> (the machine at
    <its address>) joining the tailnet: <approval_url>". The page shows the owner the address the
    login came from, so they can check it is the right machine.
-5. Call `request_status` with the `script_id` every 20 to 30 seconds, for up to 15 minutes, or when
-   the owner says they decided. `done` gives the machine's tailnet address.
-6. On the machine, `tailscale status` should now list the tailnet. Report the name and address.
+5. Right after sending the link, in the same turn, call `request_status` with the `script_id` and
+   `wait_seconds` 50. It returns the moment the owner decides; while it says `pending`, call it
+   again (the login lasts about 15 minutes). Do not wait for the owner to tell you: tell them.
+   `done` gives the machine's tailnet address: report the name and address to the owner.
+6. If you want to check on the machine: `tailscale status` (in user mode, the script's
+   `tailscale --socket=<dir>/tailscaled.sock status`) lists the tailnet.
 
 A machine joined this way gets the region's agent tag: it can be reached, but it starts no
 connection to other machines until the owner opens one. The login is valid for about 15 minutes
@@ -75,8 +80,8 @@ way; for any other machine, tell the owner.
 
 1. Call `request_leave` with its name (as `list_nodes` shows it) and a one-line reason. Send the
    `approval_url` to the owner, for example: "Please approve <name> leaving the tailnet: <url>".
-2. Call `request_status` with the request id every 20 to 30 seconds. Once it says `done`, the node
-   is gone from the tailnet.
+2. In the same turn, call `request_status` with the request id and `wait_seconds` 50, again while
+   it says `pending`. Once it says `done`, the node is gone from the tailnet: tell the owner.
 3. Call `leave_script` with the name and run its `command` on the machine as root over SSH
    (`command_without_root` for a user-mode join, as the same user). It logs Tailscale out, stops
    tailscaled and removes what the join command installed; anything else stays. It prints

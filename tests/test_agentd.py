@@ -388,6 +388,31 @@ class JoinTest(AppCase):
         self.assertEqual(len(machine["hostname"]), 80)
         self.assertNotIn("\n", machine["hostname"])
 
+    def test_status_waits_for_the_owner(self):
+        self.enroll()
+        rid = self.request()["request_id"]
+        got = {}
+        waiter = threading.Thread(target=lambda: got.update(self.app.status(rid, wait=30)))
+        started = time.monotonic()
+        waiter.start()
+        time.sleep(0.2)
+        self.assertEqual(got, {})                                # still waiting
+        self.decide(rid, "approve")
+        waiter.join(10)
+        self.assertEqual(got["status"], "done")                  # answered at once, not after 30 s
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIn("Tell the owner", got["next"])
+
+    def test_status_wait_is_bounded(self):
+        rid = self.request()["request_id"]
+        started = time.monotonic()
+        self.assertEqual(self.app.status(rid, wait=0.3)["status"], "pending")
+        self.assertGreaterEqual(time.monotonic() - started, 0.3)
+        self.assertIn("wait_seconds", self.app.status(rid)["next"])
+        with self.assertRaises(Refused):
+            self.app.status(rid, wait="soon")
+        self.assertLess(appmod.WAIT_SECONDS, 100)                 # Cloudflare answers 524 after 100 s
+
     def test_approve(self):
         self.enroll()
         rid = self.request()["request_id"]
